@@ -1,0 +1,1983 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Diamond Wt" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#15151a" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+<title>Diamond Weight Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- rhino3dm.js (client-side, WASM) - reads .3dm files in the browser -->
+<script src="https://cdn.jsdelivr.net/npm/rhino3dm@8.4.0/rhino3dm.min.js"></script>
+
+<!-- three.js (r170, ES modules) for the 3D viewer, with full PBR support
+     (transmission/ior/attenuation) needed for realistic gem/metal materials -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "threepipe": "https://unpkg.com/threepipe@latest/dist/index.mjs"
+  }
+}
+</script>
+
+<style>
+  :root {
+    --bg-viewport: #ffffff;
+    --bg-panel: #1d1c22;
+    --bg-panel-raised: #26252c;
+    --border: #35333c;
+    --text-primary: #ece7dd;
+    --text-secondary: #9d98a3;
+    --viewport-text: #6b6b72;      /* legible on the white 3D viewport */
+    --viewport-text-dim: #a8a8ae;
+    --accent: #c9974c;
+    --accent-dim: #8a6d3a;
+    --danger: #d1685a;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'Inter', -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    height: 100dvh;
+    background: #101014;
+    color: var(--text-primary);
+    font-family: var(--sans);
+    overflow: hidden;
+    overscroll-behavior: none;
+    position: fixed;
+    inset: 0;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #app {
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    grid-template-rows: 56px 1fr;
+    grid-template-areas:
+      "topbar topbar"
+      "viewport panel";
+    height: 100%;
+    height: 100dvh;
+  }
+  #topbar {
+    grid-area: topbar;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 20px;
+    padding-left: calc(20px + env(safe-area-inset-left));
+    padding-right: calc(20px + env(safe-area-inset-right));
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  #topbar .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+  }
+  #topbar .brand svg { flex-shrink: 0; }
+  #topbar .sep { width: 1px; height: 24px; background: var(--border); }
+  #file-input-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    background: var(--bg-panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-primary);
+    transition: border-color 0.15s;
+  }
+  #file-input-label:hover { border-color: var(--accent-dim); }
+  #file-input { display: none; }
+  #file-status {
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-family: var(--mono);
+  }
+  #unit-warning {
+    font-size: 12px;
+    color: var(--danger);
+    font-family: var(--mono);
+  }
+
+  #viewport {
+    grid-area: viewport;
+    position: relative;
+    background: var(--bg-viewport);
+  }
+  #viewport canvas { display: block; }
+  #viewport-hint {
+    position: absolute;
+    bottom: 16px;
+    left: 20px;
+    font-size: 12px;
+    color: var(--viewport-text-dim);
+    font-family: var(--mono);
+    pointer-events: none;
+  }
+  #viewport-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    color: var(--viewport-text);
+    text-align: center;
+    padding: 40px;
+  }
+  #viewport-empty svg { opacity: 0.55; }
+  #viewport-empty p { font-size: 13px; max-width: 320px; line-height: 1.5; }
+  #marquee {
+    position: absolute;
+    border: 1px dashed var(--accent);
+    background: rgba(201, 151, 76, 0.15);
+    pointer-events: none;
+    display: none;
+    z-index: 5;
+  }
+
+  #panel {
+    grid-area: panel;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-section {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-section h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    margin: 0 0 12px 0;
+    font-weight: 600;
+  }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button.action {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 9px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-panel-raised);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  button.action:hover:not(:disabled) { border-color: var(--accent-dim); }
+  button.action:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.action.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #1a1409;
+    font-weight: 600;
+  }
+  button.action.primary:hover:not(:disabled) { background: #d8a75c; }
+
+  #selection-count {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+  }
+  #selection-count strong { color: var(--accent); }
+
+  #report-wrap {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 20px 20px 20px;
+  }
+  .category-block { margin-bottom: 18px; }
+  .category-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 14px 0 6px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  table.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  table.report-table th {
+    text-align: left;
+    color: var(--text-secondary);
+    font-weight: 500;
+    padding: 4px 6px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  table.report-table td {
+    padding: 5px 6px;
+    border-top: 1px solid var(--border);
+  }
+  .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: middle;
+    border: 1px solid rgba(255,255,255,0.15);
+  }
+  .subtotal-row td {
+    color: var(--text-secondary);
+    font-style: italic;
+    border-top: 1px dashed var(--border);
+  }
+  #grand-total {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--accent-dim);
+    font-family: var(--mono);
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+  }
+  #grand-total strong { color: var(--accent); }
+
+  #status-bar {
+    padding: 10px 20px;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--text-secondary);
+    border-top: 1px solid var(--border);
+    min-height: 16px;
+  }
+  #status-bar.ok { color: #8fbf87; }
+  #status-bar.err { color: var(--danger); }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  #panel-handle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 0 6px 0;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #panel-handle .grip {
+    width: 36px; height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+  }
+  #panel-handle .summary {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .touch-only-control { display: none; }
+  body.is-touch .touch-only-control { display: block; }
+  body.is-touch #viewport-hint { display: none; }
+
+  #btn-touch-select-mode {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 6;
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: rgba(29, 28, 34, 0.85);
+    backdrop-filter: blur(6px);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  #btn-touch-select-mode.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #1a1409;
+  }
+
+  /* ---- Phone / narrow-screen layout ---- */
+  @media (max-width: 760px) {
+    #app {
+      grid-template-columns: 1fr;
+      grid-template-rows: 56px 1fr;
+      grid-template-areas: "topbar" "viewport";
+    }
+    #topbar {
+      padding-left: calc(14px + env(safe-area-inset-left));
+      padding-right: calc(14px + env(safe-area-inset-right));
+      gap: 10px;
+    }
+    #topbar .brand span.brand-text { display: none; }
+    #file-input-label { padding: 10px 12px; }
+    #file-status { display: none; }
+    #unit-warning { font-size: 11px; }
+
+    #panel {
+      grid-area: unset;
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      max-height: 70dvh;
+      border-left: none;
+      border-top: 1px solid var(--border);
+      border-radius: 16px 16px 0 0;
+      box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+      transform: translateY(calc(100% - 54px - env(safe-area-inset-bottom)));
+      transition: transform 0.25s ease;
+      padding-bottom: env(safe-area-inset-bottom);
+      z-index: 20;
+    }
+    #panel.expanded { transform: translateY(0); }
+    #panel-handle { display: flex; }
+
+    button.action {
+      padding: 12px 16px;
+      font-size: 14px;
+    }
+    .swatch { width: 13px; height: 13px; }
+
+    #viewport-hint { display: none; } /* desktop mouse-button hints don't apply on touch */
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="topbar">
+    <div class="brand">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path d="M12 2L4 9L12 22L20 9L12 2Z" stroke="#c9974c" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M4 9H20M8.5 9L12 2L15.5 9M8.5 9L12 22M15.5 9L12 22" stroke="#c9974c" stroke-width="1" opacity="0.6"/>
+      </svg>
+      <span class="brand-text">Diamond Weight Viewer</span>
+    </div>
+    <div class="sep"></div>
+    <label id="file-input-label" for="file-input">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+      Open .3dm file
+    </label>
+    <input type="file" id="file-input" accept=".3dm" />
+    <span id="file-status">No file loaded</span>
+    <span id="unit-warning"></span>
+  </div>
+
+  <div id="viewport">
+    <div id="viewport-empty">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+        <path d="M12 2L4 9L12 22L20 9L12 2Z" stroke="#8a8a90" stroke-width="1.2" stroke-linejoin="round"/>
+      </svg>
+      <p>Open a .3dm file to begin. Tap stones to select them, then calculate their weight, dimensions, and color-code matching groups.</p>
+    </div>
+    <div id="viewport-hint">Left-click: toggle stone &middot; Left-drag: box-select &middot; Ctrl+drag: box-deselect &middot; Right-drag: rotate &middot; Middle-drag: pan</div>
+    <button id="btn-touch-select-mode" class="touch-only-control">Box Select: Off</button>
+    <div id="marquee"></div>
+  </div>
+
+  <div id="panel">
+    <div id="panel-handle">
+      <div class="grip"></div>
+      <div class="summary" id="panel-handle-summary">Tap for selection &amp; report</div>
+    </div>
+    <div class="panel-section">
+      <h2>Selection</h2>
+      <div id="selection-count">No stones loaded</div>
+      <div class="btn-row">
+        <button class="action" id="btn-select-all" disabled>Select All</button>
+        <button class="action" id="btn-clear-selection" disabled>Clear</button>
+        <button class="action primary" id="btn-calculate" disabled>Calculate</button>
+      </div>
+      <div class="btn-row" style="margin-top: 8px;">
+        <button class="action" id="btn-hide-selected" disabled>Hide Selected</button>
+        <button class="action" id="btn-show-all" disabled>Show All</button>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h2>Material</h2>
+      <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 10px;">Applies to currently selected stones. Metal materials are excluded from ct weight calculations.</div>
+      <div id="gem-swatches" class="btn-row">
+        <button class="action material-btn" data-role="diamond" disabled style="border-left: 3px solid #ffffff;">Diamond</button>
+        <button class="action material-btn" data-role="sapphire" disabled style="border-left: 3px solid #163f7a;">Sapphire</button>
+        <button class="action material-btn" data-role="emerald" disabled style="border-left: 3px solid #1f7a4d;">Emerald</button>
+      </div>
+      <div id="metal-swatches" class="btn-row" style="margin-top: 8px;">
+        <button class="action material-btn" data-role="white_gold" disabled style="border-left: 3px solid #dcdce0;">White Gold</button>
+        <button class="action material-btn" data-role="yellow_gold" disabled style="border-left: 3px solid #e6b84a;">Yellow Gold</button>
+        <button class="action material-btn" data-role="pink_gold" disabled style="border-left: 3px solid #d9a088;">Pink Gold</button>
+      </div>
+      <div class="btn-row" style="margin-top: 8px;">
+        <button class="action" id="btn-clear-material" disabled>Clear Material</button>
+        <button class="action" id="btn-restore-material-look" disabled>Restore Look</button>
+      </div>
+    </div>
+
+    <div id="report-wrap">
+      <div id="report-empty" style="color: var(--text-secondary); font-size: 13px; padding: 20px 0;">
+        No report yet. Select stones and click Calculate.
+      </div>
+      <div id="report-content" style="display:none;"></div>
+      <div id="grand-total" style="display:none;"></div>
+      <div class="btn-row" style="margin-top: 16px;">
+        <button class="action" id="btn-copy" disabled>Copy for Excel</button>
+      </div>
+    </div>
+
+    <div id="status-bar"></div>
+  </div>
+
+</div>
+
+<script type="module">
+import * as THREE from "three";
+import { ThreeViewer } from "threepipe";
+// Note: Threepipe manages its own camera controls and environment/HDRI
+// loading internally, so OrbitControls and RGBELoader are no longer
+// imported directly - viewer.setEnvironmentMap() replaces the manual
+// RGBELoader+PMREMGenerator pipeline, and the viewer's built-in controls
+// replace our manual OrbitControls instance (see below).
+
+(async function () {
+
+  // ============================================================
+  // Settings
+  // ============================================================
+  const DIAMOND_DENSITY = 3.52;     // g/cm3
+  const GRAMS_PER_CARAT = 0.2;
+  const DIM_DECIMALS = 1;           // stones round UP to nearest 0.1mm
+
+  const COLOR_PALETTE = [
+    ["Red",      [230, 25, 75]],
+    ["Green",    [60, 180, 75]],
+    ["Yellow",   [255, 225, 25]],
+    ["Blue",     [0, 130, 200]],
+    ["Orange",   [245, 130, 48]],
+    ["Purple",   [145, 30, 180]],
+    ["Cyan",     [70, 240, 240]],
+    ["Magenta",  [240, 50, 230]],
+    ["Lime",     [210, 245, 60]],
+    ["Pink",     [250, 190, 212]],
+    ["Teal",     [0, 128, 128]],
+    ["Lavender", [220, 190, 255]],
+    ["Brown",    [170, 110, 40]],
+    ["Cream",    [255, 250, 200]],
+    ["Maroon",   [128, 0, 0]],
+    ["Mint",     [170, 255, 195]],
+    ["Olive",    [128, 128, 0]],
+    ["Apricot",  [255, 215, 180]],
+    ["Navy",     [0, 0, 128]],
+    ["Grey",     [128, 128, 128]],
+  ];
+
+  // ============================================================
+  // DOM refs + status helper
+  // ============================================================
+  const $ = (id) => document.getElementById(id);
+  const statusBar = $("status-bar");
+  function setStatus(msg, kind) {
+    statusBar.textContent = msg;
+    statusBar.className = kind || "";
+    console.log("[status]", msg);
+  }
+
+  // ============================================================
+  // Math utilities (ported from the Rhino Python version)
+  // ============================================================
+  function roundUpMM(value, decimals) {
+    decimals = decimals === undefined ? DIM_DECIMALS : decimals;
+    const value2dp = Math.round(value * 100) / 100;
+    const factor = Math.pow(10, decimals);
+    return Math.ceil(value2dp * factor - 1e-9) / factor;
+  }
+
+  function convexHull2D(points) {
+    const pts = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const uniq = [];
+    for (const p of pts) {
+      const last = uniq[uniq.length - 1];
+      if (!last || last[0] !== p[0] || last[1] !== p[1]) uniq.push(p);
+    }
+    if (uniq.length <= 2) return uniq;
+    const cross = (o, a, b) => (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]);
+    const lower = [];
+    for (const p of uniq) {
+      while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+      lower.push(p);
+    }
+    const upper = [];
+    for (let i = uniq.length - 1; i >= 0; i--) {
+      const p = uniq[i];
+      while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+      upper.push(p);
+    }
+    lower.pop(); upper.pop();
+    return lower.concat(upper);
+  }
+
+  function minAreaRectDims(hull) {
+    const n = hull.length;
+    if (n < 3) {
+      const xs = hull.map(p => p[0]), ys = hull.map(p => p[1]);
+      const d1 = xs.length ? Math.max(...xs) - Math.min(...xs) : 0;
+      const d2 = ys.length ? Math.max(...ys) - Math.min(...ys) : 0;
+      return [Math.max(d1, d2), Math.min(d1, d2)];
+    }
+    let bestArea = null, bestDims = [0, 0];
+    for (let i = 0; i < n; i++) {
+      const p1 = hull[i], p2 = hull[(i + 1) % n];
+      const ex = p2[0]-p1[0], ey = p2[1]-p1[1];
+      const edgeLen = Math.hypot(ex, ey);
+      if (edgeLen < 1e-9) continue;
+      const ux = ex/edgeLen, uy = ey/edgeLen;
+      const vx = -uy, vy = ux;
+      let us = [], vs = [];
+      for (const p of hull) {
+        us.push((p[0]-p1[0])*ux + (p[1]-p1[1])*uy);
+        vs.push((p[0]-p1[0])*vx + (p[1]-p1[1])*vy);
+      }
+      const du = Math.max(...us) - Math.min(...us);
+      const dv = Math.max(...vs) - Math.min(...vs);
+      const area = du * dv;
+      if (bestArea === null || area < bestArea) { bestArea = area; bestDims = [du, dv]; }
+    }
+    return [Math.max(...bestDims), Math.min(...bestDims)];
+  }
+
+  // 3x3 symmetric eigen-decomposition via cyclic Jacobi rotation.
+  // Used to find the stone's own "flat" plane (least-variance axis),
+  // equivalent to Rhino's Plane.FitPlaneToPoints.
+  function jacobiEigen(A, maxIter, tol) {
+    maxIter = maxIter || 100; tol = tol || 1e-10;
+    let a = [A[0].slice(), A[1].slice(), A[2].slice()];
+    let v = [[1,0,0],[0,1,0],[0,0,1]];
+    function offDiagNorm() {
+      let s = 0;
+      for (let i=0;i<3;i++) for (let j=0;j<3;j++) if (i!==j) s += a[i][j]*a[i][j];
+      return Math.sqrt(s);
+    }
+    for (let iter = 0; iter < maxIter; iter++) {
+      if (offDiagNorm() < tol) break;
+      let p=0,q=1,maxVal=Math.abs(a[0][1]);
+      if (Math.abs(a[0][2]) > maxVal) { p=0; q=2; maxVal=Math.abs(a[0][2]); }
+      if (Math.abs(a[1][2]) > maxVal) { p=1; q=2; maxVal=Math.abs(a[1][2]); }
+      if (maxVal < tol) break;
+      const app=a[p][p], aqq=a[q][q], apq=a[p][q];
+      let theta = (aqq-app)/(2*apq);
+      let t = (theta>=0?1:-1) / (Math.abs(theta) + Math.sqrt(theta*theta+1));
+      const c = 1/Math.sqrt(t*t+1);
+      const s = t*c;
+      a[p][p] = app - t*apq;
+      a[q][q] = aqq + t*apq;
+      a[p][q] = 0; a[q][p] = 0;
+      for (let i=0;i<3;i++) {
+        if (i!==p && i!==q) {
+          const aip=a[i][p], aiq=a[i][q];
+          a[i][p]=a[p][i]=c*aip - s*aiq;
+          a[i][q]=a[q][i]=s*aip + c*aiq;
+        }
+      }
+      for (let i=0;i<3;i++) {
+        const vip=v[i][p], viq=v[i][q];
+        v[i][p]=c*vip - s*viq;
+        v[i][q]=s*vip + c*viq;
+      }
+    }
+    const eigenvalues = [a[0][0], a[1][1], a[2][2]];
+    const eigenvectors = [
+      [v[0][0], v[1][0], v[2][0]],
+      [v[0][1], v[1][1], v[2][1]],
+      [v[0][2], v[1][2], v[2][2]],
+    ];
+    return { eigenvalues, eigenvectors };
+  }
+
+  function normalize(v) {
+    const len = Math.hypot(v[0], v[1], v[2]) || 1;
+    return [v[0]/len, v[1]/len, v[2]/len];
+  }
+  function cross(a, b) {
+    return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  }
+  function dot(a, b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+
+  function fitPlaneAndMeasure(points) {
+    // Returns [lengthMM_raw, widthMM_raw] (unrounded), or null if it fails.
+    const n = points.length;
+    if (n < 3) return null;
+    let cx=0, cy=0, cz=0;
+    for (const p of points) { cx+=p[0]; cy+=p[1]; cz+=p[2]; }
+    cx/=n; cy/=n; cz/=n;
+
+    let xx=0,xy=0,xz=0,yy=0,yz=0,zz=0;
+    for (const p of points) {
+      const dx=p[0]-cx, dy=p[1]-cy, dz=p[2]-cz;
+      xx+=dx*dx; xy+=dx*dy; xz+=dx*dz; yy+=dy*dy; yz+=dy*dz; zz+=dz*dz;
+    }
+    const { eigenvalues, eigenvectors } = jacobiEigen([[xx,xy,xz],[xy,yy,yz],[xz,yz,zz]]);
+    let minIdx = 0;
+    for (let i=1;i<3;i++) if (eigenvalues[i] < eigenvalues[minIdx]) minIdx = i;
+    const normal = normalize(eigenvectors[minIdx]);
+
+    const arbitrary = Math.abs(normal[2]) < 0.9 ? [0,0,1] : [1,0,0];
+    const xAxis = normalize(cross(arbitrary, normal));
+    const yAxis = cross(normal, xAxis);
+
+    const proj = points.map(p => {
+      const d = [p[0]-cx, p[1]-cy, p[2]-cz];
+      return [dot(d, xAxis), dot(d, yAxis)];
+    });
+
+    const hull = convexHull2D(proj);
+    return minAreaRectDims(hull);
+  }
+
+  function meshVolumeMM3(vertices, faces) {
+    let vol6 = 0;
+    for (const f of faces) {
+      const v0 = vertices[f[0]], v1 = vertices[f[1]], v2 = vertices[f[2]];
+      vol6 += v0[0]*(v1[1]*v2[2]-v1[2]*v2[1])
+            - v0[1]*(v1[0]*v2[2]-v1[2]*v2[0])
+            + v0[2]*(v1[0]*v2[1]-v1[1]*v2[0]);
+    }
+    return Math.abs(vol6) / 6;
+  }
+
+  // ============================================================
+  // Three.js scene setup
+  // ============================================================
+  const isTouchDevice = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
+  if (isTouchDevice) document.body.classList.add("is-touch");
+
+  const viewportEl = $("viewport");
+
+  // ============================================================
+  // Threepipe ThreeViewer: replaces manual THREE.WebGLRenderer/Scene/
+  // Camera/OrbitControls/PMREMGenerator setup with a higher-quality
+  // rendering pipeline (built-in tonemapping, post-processing, and
+  // environment/HDRI loading) built specifically for this kind of
+  // realistic product visualization - same lineage as iJewel3D's engine.
+  // ============================================================
+  const canvasEl = document.createElement("canvas");
+  canvasEl.style.touchAction = "none"; // stop the page from scrolling/zooming under our gestures
+  viewportEl.appendChild(canvasEl);
+
+  const viewer = new ThreeViewer({ canvas: canvasEl });
+
+  // Threepipe's exact property names have shifted between versions (we hit
+  // this directly: viewer.mainCamera was undefined on the deployed version,
+  // and viewer.renderer logged a deprecation warning). Resolve defensively
+  // across several plausible paths instead of trusting one, and log exactly
+  // what was found so this is diagnosable if it ever breaks again.
+  function resolveViewerRenderer(v) {
+    const candidates = [
+      () => v.renderManager && v.renderManager.renderer,
+      () => v.renderManager,
+      () => v.renderer,
+    ];
+    for (const get of candidates) {
+      try {
+        const r = get();
+        if (r && typeof r.render === "function") return r;
+      } catch (e) { /* try next */ }
+    }
+    return null;
+  }
+
+  function resolveViewerCamera(v) {
+    const candidates = [
+      () => v.mainCamera,
+      () => v.scene && v.scene.mainCamera,
+      () => v.scene && v.scene.activeCamera,
+      () => v.camera,
+    ];
+    for (const get of candidates) {
+      try {
+        const c = get();
+        if (c && c.isCamera) return c;
+      } catch (e) { /* try next */ }
+    }
+    return null;
+  }
+
+  const renderer = resolveViewerRenderer(viewer);
+  const camera = resolveViewerCamera(viewer);
+
+  console.log("Threepipe renderer resolved:", !!renderer, renderer);
+  console.log("Threepipe camera resolved:", !!camera, camera);
+
+  if (!camera) {
+    setStatus("Could not initialize the 3D camera (Threepipe API mismatch) - see console for details. File loading is unaffected; report this.", "err");
+  } else {
+    camera.position.set(50, 50, 50);
+  }
+
+  try { renderer_setPixelRatioCap(); } catch (e) { console.warn("Could not cap pixel ratio.", e); }
+  function renderer_setPixelRatioCap() {
+    const cap = Math.min(window.devicePixelRatio, 2); // cap for phone GPU/battery
+    if (renderer && typeof renderer.setPixelRatio === "function") {
+      renderer.setPixelRatio(cap);
+    }
+  }
+
+  // Thin adapter so the rest of the app (which calls scene.add/scene.remove,
+  // same as plain three.js) doesn't need to change at every call site.
+  const scene = {
+    add: (obj) => { try { viewer.scene.addObject(obj); } catch (e) { console.error("scene.add failed", e); } },
+    remove: (obj) => {
+      try {
+        if (typeof viewer.scene.removeObject === "function") viewer.scene.removeObject(obj);
+        else if (obj.parent) obj.parent.remove(obj);
+      } catch (e) { if (obj.parent) obj.parent.remove(obj); }
+    },
+  };
+
+  try { viewer.scene.background = new THREE.Color(0xffffff); } catch (e) { console.warn("Could not set scene background directly.", e); }
+  try {
+    if (renderer) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.1;
+    }
+  } catch (e) { console.warn("Could not set renderer color management - Threepipe may already configure this.", e); }
+
+const SPARKLE_ENV_DATA_URI = "data:image/jpeg;base64,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OyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UAOyKMim0UATQDc+fSrVV7UHBNWKljQUUUUhhRRRQAUUUUAFFFFABRRRQAUjDcpHrS0UAUScHBoyKJQRIQabVkjsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADsijIptFADMn1oyfWk3e1G72oDUXJ9aMn1pN3tRu9qA1FyfWjJ9aTd7UbvagNRcn1oyfWk3e1G72oDUXJ9aMn1pN3tRu9qA1FyfWjJ9aTd7UbvagNRcn1oyfWk3e1G72oDUXJ9aMn1pN3tRu9qA1FyfWjJ9aTd7UbvagNRcn1oyfWk3e1G72oDUXJ9aMn1pN3tRu9qA1FyfWjJ9aTd7UbvagNRcn1oyfWk3e1G72oDUXJ9aMn1pN3tRu9qA1FyfWjJ9aTd7UbvagNRcn1oyfWk3e1G72oDUXJ9aMn1pN3tRu9qA1FyfWjJ9aQEk4AyTVuG2/ik/KlsPUgWOR/ug1Kto5+82KtAAcAUtK4Fb7If+elMa1kH3TmrlFFxmcyuv3gRTcn1rSKhhgjNVZrYr80YyPSmmIr5PrRk+tJu9qN3tTFqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGpdtP8AVn61PVayYkMvpVmpZQUUUUgCiiigAooooAKKKKACiiigAooooAo3BPmmosn1p0zkytkd6Zu9qtC1FyfWjJ9aTd7UbvagWouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqLk+tGT60m72o3e1Aai5PrRk+tJu9qN3tQGouT60ZPrSbvajd7UBqNyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptSW8fmSAUAWrSHA81up6VapAMDApagoKKKKACiiigAooooAp3cO0+YvQ9RVXI9a1HUMpU96y5U2OVqkxMMj1oyPWm0UxaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoOyPWjI9abRQGg7I9aMj1ptFAaDsj1oyPWm0UBoWbSTbLjPBq/WQrFWDDtWpFIJEDA1LGh9FFFIYUUUUAFFFFABRRRQAUUUUAFNkYIhY9hTqqXswA8sGhagyqWySSetJketNoqyR2R60ZHrTaKA0HZHrRketNooDQdketGR602igNB2R60ZHrTaKA0HZHrRketNooDQdketGR602igNB2R60ZHrTaKA0HZHrRketNooDQdketGR602igNB2R60ZHrTaKA0HZHrRketNooDQdketGR602igNB2R60ZHrTaKA0HZHrRketNooDQdketGR602igNB2R60ZHrTaKA0HZHrRketNooDQdketGR602igNB2R60ZHrTaKA0HZHrRketNooDQZk+tGT60m72o3e1Gg9Rcn1oyfWk3e1G72o0DUXJ9aMn1pN3tRu9qNA1FyfWjJ9aTd7UbvajQNRcn1oyfWk3e1G72o0DUXJ9aMn1pN3tRu9qNA1FyfWjJ9aTd7UbvajQNRcn1oyfWk3e1G72o0DUXJ9aMn1pN3tRu9qNA1FyfWjJ9aTd7UbvajQNRcn1oyfWk3e1G72o0DUXJ9aMn1pN3tRu9qNA1FyfWjJ9aTd7UbvajQNRcn1oyfWk3e1IXAGTRoGo7J9aMn1qlPqUMJwzgH61Lb3kc4yrA07CuWMn1oz70m72qveXHkxl/SgZOZFXq361d0wrIGcc475rzLXPGJtHZA3Sut+HGrtq+myTMc4bFOUWlclSTdjsKKKKyLCiiigAooooAKKKKACs6/QrIGA4NaNUdRONtNAUsn1oyfWk3e1G72qtBai5PrRk+tJu9qN3tRoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggai5PrRk+tJu9qN3tRoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggai5PrRk+tJu9qN3tRoGouT60ZPrSbvalG5uFUmjQNQyfWjJ9alW2mYZ2VKLCUjkii6DUq5PrRk+tWvsEvqKja1mX+DNF0GpDk+tGT60MGX7ykUm72o0DUXJ9aMn1pN3tRu9qNA1FyfWjJ9aTd7UbvajQNRcn1qzaXHlvtboaq7vajd7UaBqbYOeaWs+0vdv7uU8djV8EMMg5FQMWiiigAooooAKKKKACiio5ZkhXLH8KACaUQoWP4VlPI0jFietLPctM2T07Co93tVJC1FyfWjJ9aTd7UbvanoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggai5PrRk+tJu9qN3tRoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggai5PrRk+tJu9qN3tRoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggai5PrRk+tJu9qN3tRoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggai5PrRk+tJu9qN3tRoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggai5PrRk+tJu9qN3tRoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggai5PrRk+tJu9qN3tRoGouT60ZPrSbvajd7UaBqLk+tGT60m72o3e1Ggajcj1oyPWm0UxDsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aCwHJNNqlczktsU8ChuxvQoOvLlRc86P8AvCsjW9XFjCzbugp+T61leILFr20YKecURd3qdFfAunDmi7nn2t+NZjclUkIAPrXTeDvFH2nakkmSfevMfEWlz2tw7Mp60nh3V5LG5UFsYNdHKmjylJp6n0lDMsqBgetRX8fmQMB6Vg+GNaS8t0+bJxXRsA6EetYPRm254t42tJIp2YZ5Ndh8D9W3RXGnOy5ByB3qDxzpgeJnC1x/w/1n+wfFMXmPtjlba1bNc0LGXwyPpKimRSLNGsqHKsMg0+uQ3CiiigAooooAKKKKACs3UZAXC5HFW7y6isrZ7mZwqoMkmuPtPE9pqlxIY5Qw3YHNVFCZs5HrRketRq6uMg06qAdketGR602igQ7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWlUFjhRk0QwvM4RBWtb2kcA6Zb1pN2HYrQafkbpT+FXEhjjHyqKkoqb3GFFFFIAooooAY8UbjDKDVSbTwRmI8+lXqKL2Aw3RoztcYNNyPWtme3jnXDDn1rJuLd7d9rDjsatO4rDMj1oyPWm0UxDsj1oyPWm0UAOyPWp4Lx4eM5X0qlJMkfLGmpdRSHCsDRuM3oryGXA3YNTgg9DWAD3BqRLmZOjnip5R3NyisldRmUYPNO/tKX0FLlYrmpTWkRBlmArJe+nbPzYzULSyP95iafKwuaM2oooxHyaoSStK252zUdFNKwDsj1oyPWm0UxDsj1oyPWm0UAOyPWjI9abRQA7I9aMj1qjfXyWqFmPSsiPxVamTYZB+dUlcDpcj1oyPWqFvqlvOBtcfnU0l7bxjLOKFGUnZITaWrZZyPWjI9agiuYZh8jg1LSacXZoaaeqY7I9aMj1ptFIB2R60ZHrTaKAHZHrRketNooAdketGR602igB2R60ZHrTaKAHZHrRketNooAdketGR602igB2R60ZHrTaKAHZHrRketNooAdketGR602igB2R60ZHrTaKAHZHrRketNooAdketGR602igB2R60ZHrTaKAHZHrRketNooAdketGR602igBuTRk03d7UbvamMdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAdk0ZNN3e1G72oAUk+tUJ1IkOavbvamSIsgwRSaudOFr+xndrRlCnxw+dlSOKm+yjPWp0CoMAVKiztxGMg4OMNWzhvF3hhLmJ3RMmvIdT06bTrk/KRg19J3ECToVYDkV534y8LLKjyRx8/St4S6M8WcTnfBPiNoJFid+K9h029S6hVlYHIr5yMc+lXnQjBr1PwT4jE0aRO/P1pzj1QoPozqvEloLi1fjPFeI67BJZXxkQlWVsg177cbbm2PfIryLxxppimaQLRTfQKi6no/wp8bprNgumXcn+kQjAJPUV6NXyp4T1K40rU0nt5CjBq+i/DXiJdTtENwQr4rOrCzuiqcrqx0FFICCMg5paxNAooooAKQkAZJwBUN3e2tjE091OkaKMkscV4b8Ufj5BZB9J8LyCSU5V5B2pqLlsJtIZ8dfiutqT4a0eY+ZnErKf0rifh94h1B5kVmYgmuLsNM1LxPqLXl2XkklbLMea9q8DeBFs0SWSPHet7KKsZptu56Ro1xJNaqz9cVpZNVrWBbeMIo6VMXAGTUGmw/JprShBlmFUbzVLe2UlnAx71xmv+OobdWWOQfnTSbE2jsLzXLa24aQUWOswXZwjg14NrPja5uJTskOM+tdB4H8TSyTqsjk5PrVuGlyeY9rDZGQaXJqpY3InhVhzkVZ3e1ZljsmjJpu72o3e1ADsmjJpu72o3e1ADsmlQM7BV6mmbvatPTLbjznHPak3YC1a24gjAwNx6mp6KKzGFFFNZ1X7zAUAOopqurfdYGnUAFFFFABRRRQAVHPCs0ZRh9KkooAwJo3hco3amZNauo2wkj8xR8y1kbvatE7iHZNQ3FykCFnYDFNuLlIELMQMV5x448cxWUTxxyjOPWmk2Jsm8YeO4dP3Ikoz9axvDHxDW6ugjyjk9zXiviTxNcalcOfMJBPrVHRtamsblXDng+ta8mhHNqfZ2n38d3CrqwORVzJ9a8h+H3jZLmOOKSTngda9WtrlZ4w6nORWbTRaZYyaMmm7vajd7UhjsmjJpu72o3e1ADsmjJpu72o3e1ADsmjJpu72o3e1ADsmjJqnPqENv99gKii1i2lbasgzRZgaOTSFiO9MSQOu4c0kr7UJoA5PxpqBgtmw2OK8euNfuYrosshxn1rvPiDqGFdA1eTTvukJrppx0MJvU9D8K+J7u9vI7XzTz716HliBuJNeDaHqbaZqMNyOArDNe2aZqtpqVuksEysSORmvQwiik+5w4nmduxowTPDIGUng10UUhkjV/UVz1vC00gUDjPNdBGBGgQDoK58wcW1bc3wSlZ32JMmjJphcKMmmC4jY4BH515x3E2TRk03dRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAHZNGTTd3tRu9qAG5HrRketNooAdketGR602igB2R60ZHrTaKAHZHrRketNooAdketGR602igB2R60ZHrTaKAHZHrRketNooAdketGR602igB2R60ZHrTaKAHZHrRketNooAdketGR602igB2R60ZHrTaKAHZHrRketNooAdketGR60wkAZNULrV7e2bDuBQBpZHrVW8tUuYyrAHNR22pW9yMo4P41bBB6GjYNzyzxj4V4eaJPeuP0i9n0m9CsSADXu2o2Md3EVZc5FeW+LPDJtpGniToe1axlfRmUo21O/wDDmrpfWqguCcVjeN9PEsDOB2zXL+Etaks5xBKxAzjmu91Ly9QsCy85Wl8LuV8SPF7dTb34HTDV7H4Vuf8AQVO7BxXlOq2pttRJxj5q9C8J3I+xDntVz1RENzR1fxrqejTgQSblHY1veHPiCdVAW5t9p7kV514lfzrvaD3roPCVqsUQkIqXCNhpu56PN4gtYYzI4IArzjxv8bI9DSSKxiDOOhJpvjTxFHp9m6h8HFfN/inWZtTvXAYnJrOMEXKVjU8WfFjxZ4nkeGW+dImP3UOKy/Dvh661W5VmVmLHkmpvDPhS41SZTsJBPpXu3gvwPDYRpJJEM/SrbUSEr7ieB/BEVlCkkkQzj0r0e3t47dAqgDFQx+RaRgcAAVj6t4otrJD+8GR71G5psblxewwKWZwK5fW/GVtaIwWUZHvXD+IfHruWSGQ/hXD3mpX+pSHBY5NXGBDkdN4g8dzXBZYpD+dcZdaheXznljmtOw8MXt8wLIxzXZaL8PiSrSxn8qu6iTZyPP7LQ7y7YfITmu88KeE7uCVJCpFd5pfhGytANyLkV0dtp9vCo2IKmU2VGI3SoWhgVWPQVfyPWmAADAFLWRoOyPWjI9abRQA7I9aMj1ptFAEsSeZIqDua6CJBHGqDsKxtLj3z5z0rcqJMYUUUVIFTULxbSEtn5j0rnZ764nYs0hAParuvuxmVT0xWTQezg6MY01LqyzBfXEDBlkJA7V0Wn3i3cO7PzDrXKVraA7CZlHTFAYyjGUHJbo6Ciiig8YKKKKACiiigBGG5Sp71zmoEWjvuPHWukrnfFFuzoSvUiqjuB5h458apYRPGkmCMivAPEviW41K4cmQkE+tenfETw/fytI6qxHNeMahYT2spEinrXTFIxkVGYsck0gYg5zSE4pNwqiTp/C/iGbTrpCJCAD619E+BvF0V/bojSjOB3r5RSQowYcV3HgrxZLp1witIQM+tTKNyoux9axyLIoYEc07I9a5Hwn4lh1K2T5wTiurVgwyKxZruPyPWkLKOpqOWQRoW9K5DxB4vj07cN3SmlfYTdjsPPjzjcPzp4YEZBryix+IAubsR+ZwT616NpN8t5bq4OcihxsCdzSyPWmSthCQe1LTJfuGkM808ea7PYltjkVyvhjxVeXN6qNITk+tbHxMhJ3HFch4JgB1Fc+tbJKxk3qfQWkTNLbKzHqKk1GYRW7HPaodIULaIPaqXiW7EFo/OOKytdmnQ8k8c35luGXd3riCcnOa2vEt2Z7tznvWHXXFWRzvUkQbmAFegeBbC7MiskjBTXGaPZtdXCqBnJr23wdo621ujFMHFTOXKtBxjzbnUadbiGIZ64q2zBRkmmjCjFY2v61Dp1s7s4GBXM3zO7N0rIp+J/E0OlwMTIAQPWuH074mRSX3lNMMZx1rz34h+N5LqZ4opTjJ6GvOLbWriG5EwkPXNWoEuVj7V0jWINQgV0cHIrUBB5zXzv8PviGUMcM0voOTXuWkavDqECujg5FQ1YpO5rZHrRketMHPNLSGOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA3JoyabuFG4UAOyaMmm7hRuFADsmjJpu4UbhQA7JoyabuFG4UAOyaMmm7hRuFADsmjJpu4UbhQA7JoyabuFG4UAOyaMmm7hRuFADsmjJpu4UbhQA7JoyabuFG4UAOyaMmm7hRuFADsmjJpu4UbhQA7JoyabuFG4UAMuGYRnHpXlnja8v4ZWaLdgeleqthhisbVPD9tqCnegJNNOwmrnkWj+Nr2ylCTs2M16NoXjW2vFVXkGT71zutfDxSWeBMfSuXl0bVNJkygcAVejJ1R7rb30NyoKuDmqerabFewsCAcivMNF8WXlmwSctgetd7pXim2vFAZxk1Nmh3ucHreiy6ZdGaNSBnNb/h7VzNB9nkbkDFdFq1hb6lASoBJFcRNaTaVd5UELmqT5kS1ZlfxVYgT+cq9TWl4Xn2W20motSdby1z3xVbR5fJ3KTV7onZlq9X7RfY6810kd1Hpmn7mIGFrAgAa5MjdBWJ408QmG3NvC3JGOKUuw4nI/EHxTJezvBE5IzjrXOeGvDNzq10rshIJrT0nw7c63eebIpKk5Net+HdAsdFgV3VQQOtLYdrlvwh4RttNgR5EAIHpXTXer2enREB1GK5jVPFcduhitz+Vche3+o6pIQu4g0lG+rG3Y39f8dH5khf8q4e91PUdUkIUuQa3dP8AB93euHlU4PrXY6T4IggAZ4xn6VV1EVmzzfT/AAje3zBpEbBrtNF+H8ce1pI/0rvLTR7W2UBYxx7VeREQYAqHNsagY+n+G7S1A/drx7VbuWjtR5cSjNaGR2rFumLTNmunB01Vn73QwxVR04adRplkY5LGpre9liYZbI96rUV60qcJLlaPNjOUXdM30kEihlPBp2TVPTmJh57Va3CvBqw9nNxPZpy54qQ7JoyabuFG4VmWOyaMmm7hRuFAGroygszEcitesnRDndWtWb3GFFFFIDO1iyNzFvQfMtc46MjFWUgiu0qvNYW05y8Yz60HdhsX7Jcstjk0RnYKqkk10ej2Rtot7j5mqzDYW0BykYz61YoFiMX7VcsVoFFFFBxBRRRQAUUUUAFZusorQhiOa0qzNbkVIF3HGTTW4HJ6ro1vfxMroDkeleReNfhyG3ywRep6V7fuUiq13ZQ3SFXUHNbJ2JaufG+teH7nTpWDRkAH0rFYFTg19PeMfAMF5G8kUQz9K8P8S+D7nTpXIiOAfStVJMzcbHIZHrUkE7QuGVulNlheJirKRio6ok9U+H/jOS0mSKSXA4719B6BrUWo2yMrg5FfGVjeSWsyurEYNeyfDvxwUZIJZfQcms5RvqXF9D364BeIgHtXkPxEsLhd7rnFepaZqMV9bq6sDkVj+LNHS9tXO3PFTF2ZUldHzvp93LaX43sfvV7x4E1cXFsil8nArxLxFpj6fesQuADXa/DrWdkiRM1azV0Zx0Z7gGJGc0jE7TUNpMJYVYHORUrn5TXObHl/xKA8tq4vwTn+0h/vV2nxI5Rq5XwLAG1AE+tbL4TN7nuGmnFov0rk/HV/5Vu6hu1dXbkRWY/3a8v+IOoZLIGqYK8hy0R5vqExluGOe9V4lLuFFJK+6Qk1p6FYNdXKgLnmurYw3Ow8EaEZZElZK9isLcW8CqBjArnfCWkra26MVwcV0V1dR2sRZiAAK5Zy5mdEFZEWqajHZQM7sBgV4V8SPHZYyQRS+o4NbnxG8dLBG8EUvPPQ18/61q0t/cM7sTk0Rj1FJkGoX0l3MzsxOTVME+tIPmPANa+j6HcahMqrGSD7VoQTeHftgukMO7qOlfSXw5kvfs8Ym3dO9ch4E+G4ASaeH0PIr2XSNHg06FURAMD0rOTTLijVQnaKdk00ECjcKzLHZNGTTdwo3CgB2TRk03cKNwoAdk0ZNN3CjcKAHZNGTTdwo3CgB2TRk03cKNwoAdk0ZNN3CjcKAHZNGTTdwo3CgB2TRk03cKNwoAdk0ZNN3CjcKAHZNGTTdwo3CgB2TRk03cKNwoAdk0ZNN3CjcKAHZNGTTdwo3CgBtFNooAdRTaKAHUU2igB1FNooAdRTaKAHUU2igB1FNooAdRTaKAHUU2igB1FNooAdQSB1ptUtSvBaQmQ9qAL25fUUb1/vCvN9Q+IUVrMYzJ0NVk+JkBP+s/Wq5WLmPUtw9aMj1rzqL4j2rDmUfnU6fEOzY/6wfnRysOY77I9aK41PHdkwz5q/nUieN7Fj/rF/OlZhc6x41cYIrPvNFtblSGjXn2rOTxdYsM+av509PFVix/1q/nRZhcxdU8ERPloVwfasBtG1DTZNyBsCvQR4gsXHMi/nUE1/ptwMFkOaeoWOa0/Xrm3xHNnHvV68a31GLcMbsU+7sbCXLIVz7VnmHyDhH4piM+eJoAydqoxOI5DWtdYZCWrnby5WJzzVxdyGrGhd6mttCxU81yTW82s3u58lc1osHvSFzkVraZp8VuoJGDQwRd0m1t9LgAVBuxUtxPe3p2Rg49qniFqOZGFXotU0q16smRUlmbZeFLi6YNODg11Gm+FbW3ALIMisx/Gum24wsi8VRn+JdlHnEo/Ok22FkjvYbS3gACqBip/MiUfeAryi5+KtspOJf1rKuvi0g+7J+tLlYXse1NdQr1cfnSLdwscBwa8Bufi0+Pll/Wr/AIb+I8t/drG0h5PrRyhzHuisGGRVC/t23eagznrTdIuvtVssmeoq/wBeDWlGq6MuZE1aSqxszFp0cbSMFUVqNawuclKekaR/dUCu+WYRt7q1OKOClfV6CwxiKMIO1PptFeXJuTuz0Ix5VZDqKbRSGOoptFAGnoz4nKlsZ7Vu1y1jL5Nwrds11CsGUMO9RLcYtFFFSAUUUUAFFFFABRRRQAUUUUAFFFFABXmPxV8Wx6JdW1uJwCeSua9Md1jRnY4CjJr5I+Nfif8AtjxfKtvIClv8oINa0o80iZuyPWdD8bW14qhpRk+9dVb30NwoKODXyhpfiO6snUiQ8e9eh+HfiKybVlkP51tKn2IUz3CWJJlKkAg1yfiXwfbajExEQyR6VLo3i+1vlXMgyfeuijuIbhcqwINZaovRnzV4w+H89m7yRRHAz2rzi8sprWQo6kY9q+ydZ0K21GJlaMEkeleO+NPhyVLyww/kK1jMiUex4dkitLSNUlsbhXVyMGn6tolxp8rK0ZGPaskkqeQavcg+jPh342WZEhll56da9XWSO+tuCCCK+O/DevS6dcoQ5AB9a+hfAfjKO+gSJ5MnHrWUo9TSLvoZPxC8PH55kSuG8PXb6fqCqTjDV7v4gsItRsmIAORXh+u6e+naiWCkYarg7qxMlZnu3hjUBdWiHd2rdb7przP4e6vviWNmr0lW3Jn2rKSszSLujzf4jRM0bGuZ8CKRfD612Xj9A0DVzPgmAfbN2O9WvhIe56lc3HlaeTnHy14p41v/ADrp1z3r1bX7oQaeRn+GvDfEFyZ7tznvV0kKozOhQyyAepr0vwLoW9klZK4vw7pjXdyg25Ga9u8M6aljaqzLjAp1JWRMI3ZuQqlnbjoMCvPfH/jSOwgkjSUA4I61reM/FcOmWrqJACB6182+M/FUupXTgSEjPrWMY31NW7Gf4l8QT6lcuxckE1gKrSNgck0qRyXEnygkmu18J+CbnUZkZoiQT6VrsZ7md4c8LXWpzIBGSCfSvdfBHw7itUSWaIZ68itjwd4Et9PiR5IhkD0rvre3jgQKigYrKUrmiiR2Onw2cYREAwKuU2o5J44hlmAqCiao5LiOMZZhWLqPiO2tVPzjiuK1rxz95YpP1q4wciXNI7+XXLZH27x+dXLW7S4UMpzXhJ8U3EtyD5hxmvTPB+rfaYVDNziqlT5UTGd2dlRTAcjNLWRoOoptFADqKbRQA6im0UAOoptFADqKbRQA6im0UAOoptFADqKbRQA6im0UAOoptFADqKbRQA3d7UbvakooGLu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qwfFTEWLkccGt2sLxRG0lk4AzxTW4mfOnim6lW+cBz1rBF7ODkOa6jxJo11NfOVjPJ9KzIvC17J/yyb8q6EYGcupXK8eYfzp66rdg5Eh/OtyHwTev/wAsm/KtK2+Ht2+Mxn8qG0OzOYTW74DAdqlj1vUQeHau3t/hrM2Mxn8q1bb4Z9N0f6VPMgszgItd1PAAZ6tQ6xqxI5evSbf4awjGY/0rTt/h5apjMQ/KlzIrlZ5tBq2rnAy9aFtfawxHL16TF4JsYhkxrUraHptsOUQYpcyY7NHF2t1qrAbt9XonvCcyZ/Gtu4ksIOEC/hWZd38SqSABRYTdiC7n2Rnca43VZ3eb5Setal/qDXDlEJxVEWZkbLCqWgty5omWUbutbb28zL+7rNsrcwgFRW3aXCsMHrUMpaGZLpuoup27qxrvRtZZjt313kV2sX304q/a3mnynDqo+tGwzx+78Pa2QTh6xp/DWtMT8slfRkdjp1wvCpTj4dsH58tfyo5g5T5guvDOsDOUeqL+GtWPVH/KvqabwnYSf8sV/Kq7eC9PI/1SflRzi5D5Vm8PakpwUf8AKt7wdpV9bX0bMjcNX0DN4BsHOfJX8qda+BbK3kDrEoI9qfOHKanhUuLGMP1wK3d3tVWytVtYwijAFWazLF3e1G72pKKQxd3tRu9qSigBd3tRu9qSigBd3tRu9qSigBwbBziuj0q6We3C5+Zetc1Vmxu2tJg+fl70mrgdVRTIZUmjEiHINPrMAooooAKKKKACiiigAooooAKKKa7qilmOAKAMTxnqf9m6FcunMjoVUV8f69od/JezXUiMTIxY19X66U1WQo/Ma8AVyOo+DrO6Dful59q3pvkIlG58wTWk8JwykYpsc8sLZDEYr27WvhujbjHF+lcNq3gK6tySsR49q6FNMycWjI0jxVdWTD96ePevR/DnxFztSWX9a8nu9Du7ZsGNuPaq0ctzaPkbhihxUgTaPqjSvE9peov7xcn3q/c21rqERBCnIr5p0bxjd2TKDIwA969K8N/ERJNqzS/rWTptbGilck8Z/D6K6V5IYhnnoK8S8Q+E7rTpW/dEAH0r6ltNasdTiALKcisPxL4Ps9UhZ441JI9KIya3BxT2PlBlkhfkEEV13g7xRNp1ygMhAz61p+L/AAJPYyO8cRx9K4OSKaym5BBBrT4iNj6w8K+I4dWslRnBJHrXP+OtCEqtcRr715d4D8ZSWM6RySHGfWva47631zTuoJK1nblZfxI4PwffPY3yxM2BnFe2abcie2Vgc8V4dqFo+m6nvUEDdXqHg/VBcWiqW5xRNX1FF20KPj0nyTXP+DDi5JrofHKmSE4FYXhWLymZzQvhG9zS8aah5doVDdq8ik3XN2QOcmu58cX2792DXN+HNMa8uwduRmtoaIzlqztfAuiYCyuvvXY69rcGkWLDeAQtULZ4NF0/cSBha8f+Ivjh7iR4IZeORwaxfvM0XuoxvH3jKW/uJI0lOMnvXAQ29xfzYALEmrdvZ3Wr3XCs2416t4F+HDSlJZ4ffkVV1FE7mL4K+H097IkksRx9K958M+ELXTIU/dDIA7Vf0Pw7baZCoWMAgelbDzRQryQKzcmzRKxJGixjCjpSSXEcQyzAVi6j4ktrVT84yPeuK1rxx95Y5P1ojByE5pHb6j4jtrVT+8GR71xWteOPvLHJ+tcRqPiO5umP7w4PvWNJcSSHLMTXRGkluYyqXNvUvElzdMf3hwfesaW4klOWYmod3tRu9q1SsZt3Ho5Vgc16H4G1TY6oXrznd7VueG75re6TnvUyV0VF2Z9CWswkhVhUu72rF8PXouLVee1bNcTVmdS1Qu72o3e1JRSGLu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUALu9qN3tSUUANyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWjJ9abuFG4UAOyfWoLq3W4jKN0NS7hRuFAHNTeELSaQu0anPtUsPhKxT/lmv5V0G4UbhTuxWRlx+H7JP+WS/lVlNLtU6Rj8qt7hRuFFwsRLaQL0QflUgijXoopHlVBk1l32u29sDlxxQk2DsjVYxoMnAqndarb26nLjiuM1Txoi5VH/WuYutfvL5isZbmtFT7mbmlsdxqPi2NMrG+TWDNrV5fPhCcGs7TtHu7xw8u7BrdktrTSYC8hGQO9VZRFrIpMjxx+bO+OO9cvq2tb5TBAc844qDxN4u8x2t7dvbio/CmkTalOLiUEjOeaPMLdjW0+yIg8+YdRnmrNtGJWO0dKta60en2whXg9Kb4ci+0Rs55qelx2J7JFaQxNTb5JdPkEqj5aikl+y6gAeBmuon06PU9P3KMkrUsoo6ZdW2oxCNiN1Je6Vcw5khJI9q5O4lu9Cvs8hQa7nw54gtNThEcpBPTmi9g3MaLW73T32uW49a3tO8ZROQsrYNWdS8O294heNRz6VxmreHbyzYvCG4qlaQndHplrq9tcgbZBz71dWRW6NXicOtajpr4ctgetdLpXjtThJnx9aTh2GpHpOaSsOw8SWt0BiQc1rx3MUgyrA1DVir3Jsn1oyfWm7hRuFIY7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQBp6XqbWzCKU5Q/pXRRyJIu5GBFcVuFXLLU5bRsAkqeoNS4gdXRVS01GC6UFWAPpVuoAKKKKACiiigAooqvc3sFspZ3GR2oAnZlQbmOBWFquq+YTBAeB1NVr/VpbolEJVPas/cKtR7gOyfWim7hRuFUAjxo4wy1Ru9GtbkHdGOfar+4UbhTA4rVvAtpcAlYx+VcPrPw3ZSxjj/AEr20lT1FQy28MowyA1Sm0S4pnzJqXg29tSSIm49qyRFf2D9GGK+nb7w5Z3QOYl59q5PV/h7bzBikQ/KtFUvuQ4M8u0TxneWLqrucCvStB8fQXKLHNIOfWuN1b4ezwMWijPHtXOyaZqWmycK4xTaUhJtHt19badrcB+4SRXlfjH4e7d8tvH78Cl0bxbe2LBJWbA9a7Oz8S2WqRCOYjJHeps4jumfP1xZXek3OSpG016R4C8YshW2mk4PHJrZ8T+EbTUI2lgUZIzxXmlzpd7od3vUMADVfELZns+uW8V/bi4jwTjNSeDb5refyWPeuS8M+JhdW4tp2+bGOa2rN/s94siHgnNK2lh9bnb+Jts1ru68VzumSiCNyK1b64FxY9e1c48vkRPzilFAzB8RTteXmxeea6PwtZR2VuJ5AAcZ5rAtYBcXhlfpnNWPEPiBNPszBC3zYxxVyeliUtblfx9408qNrWCTnGOK8sttOvtevclWYMa3LfSb7xDfbmVmDGvWfB/ga10+NJZoxnryKi6iXuZXgb4cJEEmnhHryK9asNPtNNhCqFXArPk1Oy0uHYpUYFctrXjhV3LHJ+tSouTHdRO01DX7a0Q/OOPeuH1zxxjcscn61xmp+J7i6Y4c4rDluJJmySTW0aSW5lKpfY2dR8R3N0x/eHBrHkuJJTlmNRrG79jViLT55OkZrZJIy1ZXzmjFa9t4dupsfuz+VbFp4LuJMbkNJySGotnJCN26Cpo7GeTohr0Oz8Cjgulbtn4OtYgCyiodRIpU2eXW/h+7m6Rn8q3dK8JXQkV9h616Xb6HYQY+Va0re0s1xsC1m6ppGmUfDtlLawqrdhXQZPrUaKiD5RTtwrBu7NUrDsn1oyfWm7hRuFIY7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQA7J9aMn1pu4UbhQAlFNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgCnqZcQMV9K8r8SXt6J2QFsZr1yZBKhU1y+o+Go7mbcU7+la05Jbmc02ebWOlXl/ICwbmu10XwmsYDyp+ddDp+hW9mgZkAxVbXfEFppcDBXAIFOU29hKFtWRajfWWjQHlQQK8n8Y+NnuWaGGTj2NUfGPjSW8kdIpTjPrXIWMFxqd0BycmhLqxN9Ebnh/TbnWL1XYEgmvb9B0VNL08MUAIWsL4f+FVgjSWSP867DxHcpYWDKOMLSbu7FRVlc808Xaj5t95SnocV1Pgu33WeSOorzO9ujeat1zlq9h8GWu2wXjtTeiFHVnKeKc216H6c11vg2/W6tQjHPGK5z4g22w+YB0qH4f6ntlERbvU7orZnSeMPDi3kDSxoM4zwK8vgv7zQNQ2sSFDV768aXMOCM5FeaeOvCYdXuIU568ClF9BtdUdR4V8SxalbqrOCcV0U1pDdJ8yA5r570TXrnQb4RSMQoOK9m8NeJoNSgT94MkUNWBO5BrPhGC4VmRBn6VwGr+FbyzctEpwPSvasiQZ6g1Uu9NguVIZB+VCnYTimeExarqWlyYYsAK6XR/H7phJn/AFrotd8Ew3AZkj/IV5/q3hG8s5CY1bFaJqRFnE9Y0fxVBfAAOCT710ccgkUMK8f8GWF6k6+ZuxmvWrNSkKg9cVnJWNItss0U3JoyagodRTcmjJoAdRTcmjJoAdRTcmjJoAdRTcmjJoAdRTcmjJoAkSR4zlGIPtV621q6g4Y7h71m5NGTRa4HRR+IYiP3iEGrC61ZFQS+K5XJoyaXKgOrOs2WPv1Xk8QwBTsQk1zmTRk0cqA1LnXLmYFY/lFUJJpJTmRyfrUWTRk07WAdRTcmjJoAdRTcmjJ9aAHUVBJdRx/ebFR/2jb/APPQU7AW6Kqf2hb/APPQU4XsJ6SCizC5ZpCoPUVD9qi/vij7VF/fFFgGT6fbzghoxzWHqXhGzugcRLz7V0AnQ9HFL5qf3hQm0KyZ5dq3w7HLQx4+grmLjw3qWmuWQNgV7sxhcYYiqdzpdncg7kWrU31JcDx201a8t8RTqSPel1C1stVhJKjcRXf6l4OtJcsigGucu/C09uT5fQVV0ybNHmc+nT6VdeZFnaD2ro9M1fzlUOfmFXr/AEaZwVkjJ/CufmsZrGTcqkAVQHeQ3+6125zxWPfXecrms6x1UCPY5qvd3YZztNNITLL34tYzt+8ay4dMutaut8mdpPerVta/aXBfpW9bzQWEYEajNKzYbGvoelafo8IZgoIFS6l4vjt1McBHHpXNXV/c3JwrECqosDKcyPVKCW4nJ9BNS8RXl2xAZsGsow3dyckMc10EOn2cfLkVdjk063HJXir5ktiLX3Obg0C6mIyhrWtPCMjYLitE+INPt+hWoZPGttFwhFLmbKUUaFp4RgTBfFa9voenQAbgvFcVcePiM7GrMuPHdy+Qsh/OptJjukerIdLth/BU0Oq2hcRW6727BRXm3haz8S+M7tYrCNzHkb37AV9BeEvAGn+H7dXnUTXBALM3ODWU2oblR12MfTtF1a/AdYPKQ92Fblv4ObObi5JGOgrqVVVG1QAB6UtYObNLHMyeCbV/+Xh6rjwVLBIXhuiV7A111FLmYWOSm0q8tl+ZNwHcVUIIOCMV25AYYIyKzr/R4bhS8Q2v7d6al3GczRT7m3mtX2Srg1Fk1QDqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNACZHrRketMooAfketGR60yigB+R60ZHrTKKAH5HrRketMooAfketGR60yigB+R60ZHrTKKAH5HrRketMooAfketGR60yigB+R60ZHrTKKAH5HrRketMooAfketGR60yigB+R60ZHrTKKAH5HrRketMooAfketJhabRQBV1Estu2zrivD/AIg3N+JHALY5r3iRBIhUjrXH+J/CUGoRMwQZI9KuLsTJXPmcpPcT7WBJJr034feFWlkSWSP36VLH8PmS/wA+Vxu9K9V8MaHHp1uo2AHFXKWhEY6mtp1lHZWwVVAwK4X4iat5UDoGx2rvr6ZYLdjnGBXhnxE1bzJ2QP3qYK7Kk7IwdEJutUBPOWr37wvFssUGO1eC+CYjNfo3vX0Lokfl2aD2p1BQRy/xBt99q7AdBXnPhTUDbaoEJ/ir1rxlbedYPhc8V4X5klhrGWBUb/SlHVWHLc+j9KuBPao2e1LqFnHdwsjKDkVheDdQFzYp82eBXTVD0ZS1R4f4+8JyW8j3MEZGOeBXNeGPFdzo12sMrkKDjmvftd0iLULZ0ZAcj0rwTx14Wm025eeFCBnPFaRdyGrHt3hrxNBqUCfvBkj1rplYMMg18v8AhDxlPpdysMspABxya948NeJrfUoEPmAkj1qZRsUmdOyqwwcVQvNJtrofMgq6rBhkGlqdijNs9GgtW3KgFaigAYptFF7gPyPWjI9aZRSAfketGR60yigB+R60ZHrTKKAH5HrRketMooAfketGR60yigB+R60ZHrTKKAH5HrRketMooAfketGR60yigB+R60ZHrTKKAH5HrRketMooAfketGR60yigB+R601zhSQaSkb7poA4vxRrEtnuKnGK4x/GVwGI3/rXSeOYsqxry6dW8w4zXZTimjmm2mdYPGlxn/WVPF42mXq5/OuKEUp6A1IttO3QGtOSJPMzuB44l/v0o8cyf364tNPuW6K1WI9Gu36I3NTyRHzSO0h8dMOr1P/wnX+3XHxeHrxuiNV2HwveP1VqlxgNSkdIPHDZ+9VqHxqT1NYEHhC5bqprQg8ISr1zUtQKTka48X7+OtIfECTcFOtVU8NLF99qVrC2g6tStHoO7J2lt7gZKDmsjU9LgnU7VFW2aNeI6QgsvNKwHn+rWT2TEpxVOxEk8nzV0PiRRyKzdKtjndirWxJp29q4QbR2psttc5+6TV2KbyuCK3tHsp9SP7m2JA74pN2KjFzdkce0V2gJCGqk01+vAVq9Rl0eK1wt1AFz3IpE0DTLjkKtTzobpuLszyOWXUz2aqEz6kc5L17iPB9i44jWq8vgS0Y58sflTVRC5GeFvHft1DVA8N3nkNXup8A2p/wCWY/Kq0/w9gY8Rj8qftELkZ4eYJz1Vq1fC3hbUPEurw6dbRnLsMnHAFepn4dRHpH+lel/DTwHaeH4GvnhXzn6EjoKU6yS0BU2zf8FeE7Lwpo8NjBCokCjewHJNdDRRXE3d3ZulYKKKKQBRRRQAUUUUAUtTsEvICABvHQ1ycsbQyGN+CDXc1z/iGyxi5RfrVRfQDEyPWjI9aZRVgPyPWjI9aZRQA/I9aMj1plFAD8j1oyPWmUUAPyPWjI9aZRQA/I9aMj1plFAD8j1oyPWmUUAPyPWjI9aZRQA/I9aMj1plFAD8j1oyPWmUUAJuNG403IoyKYDtxo3Gm5FGRQA7caNxpuRRkUAO3GjcabkUZFADtxo3Gm5FGRQA7caNxpuRRkUAO3GjcabkUZFADtxo3Gm5FGRQA7caciySHaiEn2rQ0vRpLw+ZICqD9a6S30+1tgPLjGR3qXKwHKxaXfS5xCRj1p7aNfqCxi6V14AHQUtTzMDhZbe4h5kiI/Cotxru5IIpl2yICKx9S0BHBltRgjnFNSA5zcaNxokRonKOCCKbkVYDtxo3Gm5FGRQA7caNxpuRRkUAO3GmuA4wwoyKMigCt/Z8G/fsGasoAgwAKMimyOFQnNGoGB4s1EWtm/zY4r548U6ibq9fnvXq/wARtX8uF4w1eH3MxnuySepraC0MpvU7/wCHNsXuEbHevfNNjPkxoo5Irxn4aWwLK2PSvctGRSwz2Fc2MrewpSqdjSjHmaRcGkW0qD7QgcnrmsPWvhv4c1dCxs1jlx8rKO9dXRXw0sbXlPn5nc9X2ULWseXaPplz4Z1A6dMSUz8h9q7BHyoNVPHHk26wXJAD7sZp1hMJbdWz2r7DAYh4qgqktzz6sFTm4otN8wwRXK+LfDsWpWr/ALsEkV1ORTJEWRSp5zXYtDJq58peLvD1xpF40kakAGr/AIK8bT6fOkMshABx1r17x34Siv7d5FjBOD2rw248K3lrqWI0bG70rVO61IasfSfhnxFFqduhDgkiujDZGa8x+HWm3dvChlB6DrXpacKM1m0WiTcaNxpuRRkUhjtxo3Gm5FRTXMcKlmYACgCfcaNxrnp/FNnFN5XmLn61qWN9HdoHRgc0WC5d3GjcabkUZFADtxo3Gm5FGRQA7caNxpuRRkUAO3GjcabkUZFADtxo3Gm5FGRQA7caNxpuRRkUAO3GjcabkUZFADtxo3Gm5FGRQA7caNxpuRRkUAO3GkJJGKTIoyKAOZ8R6U16pAHWuQHgl3kJKda9SZEbrSCGIdh+VaRqOKsQ4Ju555B4HA6p+laEPgqFesY/Ku1CIOgpflodSTDkRy0PhG3XrGPyq9F4atU/5Zj8q2mkRepFVZ9SghBy44pc0mPlSIY9EtU/gFSfYrOIZKjism/8U28AOJB+dcvqXjfqI3qlCUiXKKO3nvLG3H8PFY194mtIc7SCa8/ufEV5eMQjNzUllp99fuCd2DWip23Ic77G9c+J5Z2Kxd6ZBHe3rZO7BrR0rwoEAeZfzrVuWtdNiwuMgUnJLYdm9zJ+yLbp855qGQnYSOlOWWW/m4+7mmam620fljGTSbA5LXny5zTtFVWTpVfXeF3HvVnw4BJGSKdwNZbMSTIpHDEA16vo1hb2NjFHAgGVBJrzO3wX2ZwR0rrdL8Vw2UAt9RyNg4as6qclod+AqQpSfP1N/WrWO50+YOOVUkGvGf8AhLbrTruSFmO1GIGa9E1PxpYXkZtLOTO8YJrhdX8LLeBp4eWbmlSi4r3gx9WFSS5Ohr6X4/ifAkcfnXVWPii0uQD5i8+9eF6hpN/p7kqGwKhtvEV9ZMAXbitXTT2OBTa3PpGK+t5R8rCpwyN0wa8L0v4gzRkB5DXX6X8QIZQA8o/Os3TaLU0z0q2hE06R4HJruLeIQwpGowAK828I67aapqMUQcEnnrXplYT0dixaKKKgAooooAKKKKACiiigAqtqEAntZEPpmrNNcBlIPQigDg3yrFfQ4pNxqW+CpdSKOAGNQZFbAO3GjcabkUZFADtxo3Gm5FGRQA7caNxpuRRkUAO3GjcabkUZFADtxo3Gm5FGRQA7caNxpuRRkUAO3GjcabkUZFADtxo3Gm5FGRQA7caNxpuRRkUANopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQA6tTRdKN7J5kg/dr+tZcatJIqLkknFd1p1sLW1SMKAcc1MnYCeONIkCIoAFOoorMAooooAKKKKAMfW9IS4jNxCuHXk471yrAqSpHIr0EgEYNcdr9oba8LBcK/Iq4voBnUU3J9aMn1qwHUU3J9aMn1oAdRTcn1oyfWgB1VNRuBBbsxOOKs5PrXNeLtQFtZv82ODTSE9DyL4h6sZbh0Dd68+tv3lyPrWt4pvzc3jndnk1maUpe6QY710JWRg9T274a222JCRXq9nMYHVu3evO/h7b7LVCR2rvgeK5q0FVThLZm8G46o6OORZVDKQc02e4htommnkVFUZJJrCS4liHyORXn3xN1fVvsMkcdy6KQQdpxmvmXkM3UtGXunb9bSWq1ML4gfEmHV/EkenafNuggbBIPBNegeFr0XNihznivlWO5e31QuzEndkk19AfDjVhPaRqW7V9JRw8cNSVOGyOF1HUlzM9HopitkZBpcn1qiiO6t1uIyjDINc3N4PtJbjzTGOueldRk+tJTWgFXT9Pis4wiKBirtNyfWjJ9aQDqKbk+tHPrQBS1LUo7KIu5AxXl3i/4jJbh44peRx1rt/F9vNNZv5WelfNvjO3vIbt/M3YyauKuTJlyTxzdzX27zTgn1r2X4eeJReQIjyZOB3r5hDsr57g16R8OvETWtykbPxn1q5IlM+nkYOoYd6dWVol+t5ao4bORWnk+tZGg6im5PrRk+tIB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1JuHrUNxOIYyzHpXKX3jGC1uPLMgHPrTSuF7HZUViaX4gtr5AVkGT71rq4YZBosBJRTcn1oyfWkA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQArHaM1lajrcVoDubGK0pMlDXAeMo7hVZkJ71cEm7MmTsh2p+NkTIR/1rldR8YzzEhZD+dczcvcPKVOetWLHSLi6YfKa61CMTncmx82qXd233ic1ZsdHu71xuVua6XRvBrNtaRP0rt9M8PQWqjKCplUUdhxg3uctong77rSp+ldlZaNbWaAlQMVoLHFAvAAxWFruvxWkbKHGawcnM25VFEmrazb2UZVGAIFck13carc7VyVJrKnvLnVrrapJBNdp4e0RYIxJIvNVZQRN+Zjra0j0+0MjAA4rlr26N5elVORmt3xdqa20JhQ4zxXNaDE1xI0zdKS7jfYwvFr+TGBVrwM5nUqTWV8QbgRvtB6VY+G1zukAz1p9CTr7kG1ug3atSWzj1Gz3KMnFVfEVuVhEy9qTwzqSufs8jfnR0uPyOVv4J9NuCRkAGtrRPEKMBFMa2vEeiLcwmVFzxmvObuKawnJGRg1rG00ZO8GelTaXY6tDkBSSK4vxB4GZN0kMf5VPoPiZ4XVXc4rvbK/tNShCttJIrNpwZpFqR4Df6RdWTn5WGKqR3tzbn7xGK931rwfbXqM0aDn0rzbX/BU1szMkZwParjNPclxaNj4O+JH/wCEttYbifCsccmvq1SCoI6EV8R+G/N0LxJZ3ciHEcoJ/OvtHSLyO/023u4yCskYPH0rmxC1TRpTehcooornNAooooAKKKKACiiigApGICkk8Ypar38ywWkkjdlNAHGX7BruQg5G6q9Ej75Gb1Oabk+tbAOopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AN3GjcabkUZFMB240bjTcijIoAduNG403IoyKAHbjRuNNyKMigB240bjTcijIoAduNG403IoyKAHbjRuNNyKMigC/o8fnX8ak4wc13I4GK4jQnVdQTLAV3FZz3AKKKKgAooooAKKKKACuf8VRZiSXPTtXQVheKnUWqrkZz0px3A5XcaNxpuRRkVsA7caNxpuRRkUAO3GjcabkUZFAA77VJNeY/EbV/LheMNXoWpXCwW7NnoK8H+Ier+dcOivVwV2RN6HBX85mnZiepq94diMl4g681ju25ia6XwdD5l6n1rZmR794Lg8uyTjtXVZNYfhqLy7JPpW1kVzvc3Wwuc1xPxAtvNsZDjPBrtlBY4UZNY3ijSLu7sXCQMx2ntUOpCD952G4trQ+T9ZVrfUGwMYavUfhbq+GSMvXn3jewmstRkWWNkIY9RV7wBqZt71Bu710bq6MVoz6ntpfMiVh3FS7jWR4fuxcWSNnsK1cisTYduNG403IoyKAHbjRuNNyKMigB240bjTcijIoAiuYFnjKMoOa8k+Ing4TI80cfPJ6V7BkVn6rp8V7AyMoORTTsJq58c6tp8tlOyMpGDTtFv3s7pGDYwa9Q+Ifg0xNJNFEfXgV5HcQvaTkEEEGtlqjN6H0t8OfEi3VvHG0gzgV6Ukm9Qwr5b+H3iNrS6SNnwMivo3QNSS9tUbdnIrKSLizZ3GjcabkUZFSUO3GjcabkUZFADtxo3Gm5FGRQA7caN1NyKgvLhYImcnGBQBh+K9XWztX+fBxXgniHxDPLesUkPX1rs/iF4kLF4kkry+CGTULrjJya1gjOTud94I1+9eZELMRmvbtImklt1Z+uK8x8BeFdgSWRPevVrWFYIwg7CpnuVEs7jRuNNyKMioKHbjRuNNyKMigB240bjTcijIoAduNG403IoyKAHZNYuu6at3Cw25yK2MikYKwwaadhNXPMl8Gs90WKcZ9K6nSvDEFuqkoM/SugEEQOcCpBtHSqdRslQSI4baOFQFUVK0gjXJwKbJIqKSTXLeIvEkdnGyq/IpJcxTaRa17xBFaRMA4zXnF7qNzq11sQkgmqV/q9xqtyURiQTXWeFPDpO2aVeTzzWySgjG7kzR8L+HxGqyypz1rrLqSOytSRxgVJbQJbxhVGMCuZ8Z6utrauofBx61k3zM1tyo4jxPqpvb8xK2ecV0egWnkacZCOSM1welh9S1UE8jdXqTQi00r0wtXLTQlani/xFuc3jLnoatfDS5AulGe9YHj653378/xVc+HEwF6nPenb3Sep7vqdqLnTsgZ+WuBt7l9O1HGcYavTbRBNpwHXK15p4ttWtLsyKCBmpg+g5aHo2mzR6jZgEg5Fcn4q8P8A3pESneCdZ3BYXbpXa3tpHe254zkUJuEh25keEzpLaSkcjFbGi+IZbV1Bfj61peKNBMLs6rXGSK0L45GDXUmpo53eLPZ9E8QxXaKrsDmta60211CPO0HIrxbStaltZF+c8V6J4f8AFKSqqu/Nc86bjqjaE09GUNe8EIxMsKDIORxXq3wr1aSbRl0y6OJbb5RnuKxopobuPsc1JpytpV+t3b8DPzAd6xk3JWZolbVHp9FV7K6S8t0mQjkc1YrnKCiiigAooooAKKKKACuf8T34SMWiHk8mtXUr6Oxt2kYjdjgVw91dPdTNM55Jq4rqBHuNG403IoyK0AduNG403IoyKAHbjRuNNyKMigB240bjTcijIoAduNG403IoyKAHbjRuNNyKMigB240bjTcijIoAduNG403IoyKAHbjRuNNyKMigB240bjTcijIoAbRTcn1oyfWmA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQBYs5hBcpKegNegW8qzQpIvRhXm+T611fhrVlkjFpMwDD7uazmuoHRUUUVmAUUUUAFFFFABXJeKbtJbgQL1XrXRajfRWNu0jsM44FcFd3L3U7TOeWNXBa3AZRTcn1oyfWtQHUU3J9aMn1oAdRTcn1pkj7UJJoA5zxjqItbN/mxxXzv4lv2ubxznvXrHxH1bZG8asa8QvJTJMzE961gtDGbuyIEk13HgG38y8Q47iuGXBYCvTfhva7p0bHeqlsJbnuOjpstUHtWgql2CjqaqWS7IFHtWlpuDdKGrjrVPZU5T7I6Iq7SNeysI4EDMuWNWiiMMFQR9KdRXwNatOvNzm9T1YxUVZHnHxR+F2meKtKmntoFju41LKVHWvlmxjuND1t7KcFXhk2nPsa+7GAZSCOCOa+WPiV4TkuPHNzNZw4Qtn5RX0eQ4ucm6E3ddDixdJK00ej+ANT+02UYLdq7YHIzXnfgLTLixhRZARgV6CpO0c19C9zljsPopuT60ZPrSGOopuT60ZPrQA6im5PrSqGchVBJNAC09IZJjtRC2fQVs6V4bkuAJbnKr6V0trp1raKFjiH1xUOdgPL9c8C3utWzBLbkjuK8X8V/ATxdJLJPZWG4DJwK+wQAOgoIB4IFJVWhNXPz7fwl4q8M3Qa+0q4jVW67DivZvhv4i82FIZWwQMEGvpG/0PStTiaG9sYZVYYOVFcDqvwb0qKdr/Q/3En3tg6Gr9qpbitYSNxIgYd6dVS2gu7EfZ7yNlZeOe9Wcn1plCSSrGMsarnUoAcbhVPWpWjhJU9BXAXOt3CXOzeetXGHMRKVj1GK4SX7pzUtcx4cu5LhAWNdICcdalq2hSd0PJwMmuU8YaytnauA2Dj1rpJS74ij5ZuBTf+Fe2mpfvdVYvn+HtXHicbRwaTqPXsaQpyqfCfL3iC/k1C9YAk5NdT4F8MNcSpK8fGa9k1P4I+GLn97aRmKQcj3NGleEh4fIgdRx0OKMLmdDF+7TevYU8POnqy3pGnx2cCqFxgVpUwcDApHkCDJauskeSB1qpc6jDb/eYVmavr8NojfOM155rnix5ZCI3qowbJcrHqlrqcVwcKwq8DkZryXwz4jYzBZHPNem2F2txEGDdqJR5QjK5dopuT60ZPrUlDqKbk+tGT60AOopuT60ZPrQA6im5PrRk+tAFPVGkEDbPSvJvEsd7PclMMQTXsUiCRSrc1jXfh+3uH3lBnNXCXKRKNzhPCvhlpHWSVPzr02ws0togqqBiorDTorRQFUDFXs4HWlKTkxxjYjvJxBCzE4wK8c8d62085gRs84r0PxZqyWlo/zY4rxC7uW1LVeCTlqqmupM30O18AaYZZVmZa7vxG32fTWAI4WqHgfThb2iMRzin+OZxHYSYP8ACaTd5DSsj528ZT+Zfvz/ABGr/wAP5yl9H9awPEs3mXznPc1oeCpyl/Hz3ra2hn1PqXQX8yxXPpXMeONN8yFpAtbvhWXfYp9BU3iC0W4tXGO1YJ2Zq1dHkegX7WN+FJx81ex6PeLdWynOeK8P1iNrDUCwGMNXoHgjWxLEsbPWlRXVzODs7HU63paXcLfL2ryrxDoz20rEJXtQKyp65Fcz4j0RLmJmVcnFKnPldhzjc8YbKNjuKu2Gpy2zghiMVPrOmPazN8pHNZBODzXVuc+x6b4d8VfdSR/1ru7LUIrlAQwOa+f7W9eBwVY12vh3xO6sqM5rGdLqjWFToz2jS9Yn09gFOUPUV19jqdtfIGjcbu4ry/TL8XUQbNacNxNA2+KQqa5JQOhO56TRXIWfiq4iAWddwFasPimxk4fK1m4tAbVFZf8AwkWm/wDPSq0/iqzTIjUse1KzA3aztR1i2sUPzhn7AVzt74nu7gFIhsU1jyTSSsXkckmqUO4FzUNSn1CTdI3HYVTpuT60ZPrWiVgHUU3J9aMn1pgOopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AOopuT60ZPrQA6im5PrRk+tADqKbk+tGT60AN3e1G72puRRkUAO3e1G72puRRkUAO3e1G72puRRkUAO3e1G72puRRkUAO3e1G72puRRkUAO3e1G72puRRkUAO3e1G72puRRkUAO3e1PimeFxJGSCKiyKMigDtNE1+K6jENywWQcZPetwEEZByK8wWQoQysQRWrZeJL21IDvvUdjWbh2A7uiuag8YwEfvoiPpUj+L7PadqHNTysDoaqX2o29jGXlcZxwK5m78XTyptgXYfWsW5vZ7p980hY01B9QLOp6rNqExZidvYVS3e1NyKMitUrAO3e1G72puRRkUAO3e1G72puRRkUAO3e1R3GWjIHcU7IoJBoA8w8aeHLnUGYqpNeZ3/gu9hZj5R/KvpSW1hlHzKDVC50GznBzGOfarU7EONz5jbQbuGQAxN19K9T+G+nyRFS6YrsrrwXZSNuEY/KtHSNCi0/GwYpud0JRszbh+WMDHapY5TG4cdQaiBAGKXIrJpSVmabHT2d5Hcxghhu7irVchHM8R3I5Bqz/at1jHmV81iMik53ovTzOyGKVveRt6heR28DfMCxGAK4R9Cgnunu5kDO5ySa15JnlO53JNNyK9bL8BHBRet5Mwq1XVZDBaQ24wigVY3e1NyKMivQMh272o3e1NyKMigB272o3e1NyKMigB272rp/Dejbh9ruU4/hBrD0mzN9eJEBkA5NegxRrDGsajAUYqJu2gDgABgDApaKKyAKKKKACiiigDM1nSIdQt2wg8xRlTXDTRSW0jQyrhlOK9MrlPFunbWF7GvB4arg7aAcRrfNu3HavLr0H7d0716nqyhrdue1eaX0Q+3n/errpGU0dr4WXEC8V0xfaM+lYHhtQtuv0rR1O8W2gZy2MCs5blx0Rr+HxHdXruSDs7V09eM+EfHMNr4nazuJf3cx2j617IjrIodCCCMgivjc7hOOJvLZ7HpYZpw0HVn6xCrW/mcZWtCud8Va1BZQeT5g3Hk1y5bGcsTDk7l1mlB3Mye6jhUliBXKa94pjt0ZUcZ+tYviHxcBuSOT9a4O/1Sa7ckuTmvv4w6s8iUzR1jxDNdufnOD71hPI8jZOSakgs5rhuFJzXQaX4VnuCCyHFa6Izs5GZpC3CzKUB61654XllMChwelZmj+EI4QrOldZZ2UdqoCjGKxnJM0jGxdDcdKN3tTcj1oyKzNB272o3e1NyKMigB272o3e1NyKMigB272o3e1NyKMigB272oz7U3IoyKAHbvaoriYRxFj2FPyKwPE2qLZ2rnfjihK4m7HnvxE145aFG/WuV8H2bXuoK5Un5s1neJdUa/v2UMSN1dz8N9KztlZa6LcsTLdnqei24t7RQBjiuQ+I915dnIM9q7qNRHCAOwryz4o3O2Bxn1rGOrNHojwfWJPMu3PvV/wAKShL9P94VjXz7rhznvV7w8+29Q57iujoYn1P4LmD2Cf7orobpBLCy47VyHgGXdYx89q7IkEYrme5utjx/x3philaVVrG8J6u1pdqjHHNei+NtOE1u7Adq8dd2sr/gkYauiHvRsYy0Z9EaPfLc26sDnirs0ayqVIrgvA+s+dCiF+1d8jhlBzWElZmsXdHEeKdAEqtIiV5lqNm9tKwK4r328t0uIyp5rzvxP4cJdnRetbUp9GZVIdTzyKJpGAArqfDuizySq204qfRfDMkkw3ocZ9K9F0jRorSNTtGcVc6iS0JhC+5Y0a0a2hUN6VqbvamKFUYFLkVyN3OhKw7d7Ubvam5FGRQMdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAdu9qN3tTcijIoAbRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAOr8HW3+suCvsDXVVz/AIP/AOPFvrXQVjLcAoooqQCiiigAooooAKoa3ALjTpU25IGRV+qupNssJ39EJ/ShAeVahloHXuMivPbyLN+c+tdfHqaXTzpuzhzXOXUe6+yPWuynoZy1Or0QCO2Un0rnvGmtCKFokbk8VrfaRaWGd2Plrz3VZJtWv9gJIzStrcfQo6Dplxf6ktwuQQ2Qa9y0LV7uws0iuGLhR1Ncb4c0qHTrdZJAAcZp2teJYrVGSN+awr4enily1FcqE3T1R1et+OxbRMI8KcV5P4k8X3F7K370sT71nanq93qEpVCcGl03w5c3rhnUnNXhsFRwi/dxsKpVnU3MbbdXr5wTmtrS/C09wwLRnFdnpHhCKIAugzXUWmlwW6jCit5VLbEKBzOk+EIogpdBXUWmlwW6jCDiraqFGAKdk+tZuTZoopCqqqMAYpabk+tGT61Ix1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oASaQRoWPpXlHxG17YjxK/r3rv/ABDqK2dq5LY4r5+8Z6y15duofIzWlON3czm7IzNOVr7UASCctXvvgfThbWiNt7V454F0w3N4jlc819A6LbC3tUXHaqqPoKCNCU7Yz9K8V+Kl1w65r2W8fbAxz2rwL4pXRaVxuqILUuR5RO2ZWPvVvR323aH3qg5yxyan099tyhB71uYn0x8OJ91nGM9hXoQ6V5X8MLgtbRjPpXqKkkDmueW5vHYztdthPauMdRXhniqyNteMwXvX0DOnmRMp9K8n8f6XhnkC1dJ2djOotDF8F6wbe4VGbHNe1aXdrc26sDnIr5tsblrS6BDYwa9l8Fa0LiBEL84qqseoqcuh3dVbqyjuB8yip1bcMg0uT61gbFO202GA5VRV4AAYFNyfWjJ9aBWsOopuT60ZPrQMdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAHUU3J9aMn1oAdRTcn1oyfWgB1FNyfWjJ9aAG7vajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oJAGc0Adh4LuspJbkjjkV1NeYaJrsOm6gheQAMcHmvTIZUniWWNgVYZBFZTVmA+iiioAKKKKACiiigArG8X332Dw/dzggHyyBmtmvKfjP4q+yWyaNbnLPy+KqKu7AeXaNqsn2yYSHG9ya13CvOJa42O58uYSDjmt2DUg8QO7mutaGbNDV74mDyUPWqmkWcUTfaJh781VLtPLk84q6kU8qiNAcUWHck1TXWCGG39McVhLp97qUu5t2DXT2Ph0SMHmGa6K00y1tgAAtHMo7Ctc5jSfCCqQ0iZrrLLSYLZQAgq0rwxjAIo+1Qj+MfnUOTZSSRKoVRgLTt3tVZr2BerimHUbf8AvipKLm72o3e1Z7avbKf9YKRdXtmOBIPzosK5o7vajd7VDFOsoypBqTI9aBjt3tRu9qbketGR60AO3e1G72puR60ZHrQA7d7Ubvam5HrRketADt3tRu9qbketGR60AO3e1NkkCoSaMj1qnqcjJbsVPagDgPiHrqxQvGr84rxGeVry99ctXcePmvJp3ADEVyOh6dNNeqGU9a6YKyMJas9U+G2kBUSRkr1qFRHGFA7VyfgvThbWaErg4rrRj1rCbuzWKsipqsmy1c+1fOfxLud93IM9zX0F4gl8uyc57Gvmjx/ceZfSc96qmTM4wnJqa0YLMpPrVck560+A4kBz3rczPf8A4WXAMSLn0r19GyoNeG/Cu4+4ua9ugYGNTntXPPc2jsTE5GMVyHjTTxPauQvautyPWs/WLYXFswxnipi7McldHznqkLW90wxjmun8Fa0bedEZsDNVvF2kvHdOVQ9az9DsLxbhWVW611tqUTn2Z9BaXeLcwKwOcir272rmPCpnW2RZM9K6UHiuRqzOhDt3tRu9qbketGR60hjt3tRu9qbketGR60AO3e1G72puR60ZHrQA7d7Ubvam5HrRketADt3tRu9qbketGR60AO3e1G72puR60ZHrQA7d7Ubvam5HrRketADt3tRu9qbketGR60AO3e1G72puR60ZHrQA7d7Ubvam5HrRketADt3tRu9qbketGR60AO3e1G72puR60ZHrQA7d7Ubvam5HrRketADt3tRu9qbketGR60AO3e1G72puR60ZHrQA7d7Ubvam5HrRketADaKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqiuXKRMR6U/Jpky+YhU0AeTeNfE95p1wTCzDaeMV6V8Dvi/H4gjOhaxKqTx8Rlj96uW8ReDE1VyxXrWPp/wAP59Ku0vLF2iljOQy8U2lJWJ1R9XggjIOQaWvO/BnjG7ht1stbJZl4D131vd290geGVWB9DXO00UTUUUUgCims6oMswA96xdX8U2OnoyxyB5McAU0rgTeI9ettC0+S5lcBwPlGeprwbW7p/El7Je3IyWPFdF4k1ObWJi95PlAchc8CudaeCLKxYreELEtnL6lpRhyUFZkE8scmxs4rq7xhNkEday5dNBbeFrVKxO5o6VGkihjW3HshHyqDXP2YeIYXtV1NRMTYlHFS2M05NVljGFXFVJNcugeM1YtrmxucBiMmtGPS7OYAjbRoM5y41+9C8ZrPfxHf56tXaSeHraQfdFVz4VtT/AKd0KzOJm8Q6gehaqUviLUR3avQT4TtcfcFV5fBtsx4QflTUkKzPOpfEGpMfvNU2n63qLzqGZutdz/whNt/zzFSQ+DreJwwQcU+aIWZq+HZ5JbdWfrityqNhZraoEXtVzJrJ7lodRTcmjJpDHUU3JoyaAHUU3JoyaAHUU3JoyaAHVHPEJUKkU7JoyaAOV1nwhbX+4lASaw7HwHHa3QkEfQ5r0Y89abtXrgVXMyeUg061FrCqAYwKt00HHSjJ9akowPF0/l2D8/wmvmPxjOZL+Tn+Kvovx3ceXYyc9q+ZvEkvmXznPetqZnMyd3tSo3zCmZHrSqcHrWpmevfCyciZBmvfbNswKfavnH4ZXO26QZ7ivonTGL26YPUVhNamsdi6FLHAFEts7oQR1q3FGEUcc1JXdTwKcbzepw1Ma72itDh9W8Lx3spZko0/wAJWtsQTGM12U8Ksu4DkVT5HFctenKi+XodNGpGsrkNtaR26hUXFWKbk0ZNc50DqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADqKbk0ZNADd3tRu9qbketGR60CHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAUhT/DSYX+7RketGR60DFAUfw1atdSu7M5glZR6ZqpketI7hBkmgR0MHjHUYl2thvc06TxzfBTlVFcXd6xDbg5ccVzWp+K1XIR6caV+gnJI7zU/Gl5IpElyQPQGuP1LxUMnbJkn3rjrvXLi6YqrnmpdP065vZAXzg1uqaiZud9jSbUbu/fCk4NXUtWgi82U84rS0/R4rOLzJAOBWH4g1ZRJ9nib24qXLoiku4kLG5uNq8jNaclsqptI5qLwzYll85x19au3xCThc1KGZDr9mkBI4NXxp8V/DujxnFLqdp5lr5idQKytE1c21z5EpwM45pAU9Rsb/T3LoGwPSmWfjC5snCTk4HrXoLW1tqEGSAciuS1/wAGLKGeBcH2oTuOxr6X4ytboBWkGa6G31CCdQVcHPvXhOoadqmkSlk3gA1Ppfju8snEc7HA9aHELnu4cHpS5HpXEaB42g1DapcZNdhBOJkDA9alqw1qT5HpRkelNyPWjI9aQDt3tRu9qbketGR60AO3e1G72puR60ZHrQA7d7Ubvam5HrRketADt3tRu9qbketGR60AO3e1G72puR60ZHrQA7d7Ubvam5HrRketADt3tRu9qbketGR60AO3e1BbjpTcj1pHOFPNAzgPiRclLOQZ7Gvm7WJN9259697+KFyRbuAfWvn6+3NcMfet6exjMr0DrSbX9KXa/pWhJ6B8OZwl7GPcV9KaFKGtoyfSvlvwHI0d9Hnjmvpjw5LvskOewrKbs0y0rqx1gOQDS1UguwAEep/PixncK9enXhON7nkzozhK1h0hAQk1nM3zGpri6DjanSq2R6152LqqpJKPQ9DC0nTjeXUdu9qN3tTcj1oyPWuM6h272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAHbvajd7U3I9aMj1oAdu9qN3tTcj1oyPWgB272o3e1NyPWjI9aAG0U3JoyaYx1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1FNyaMmgB1Vb4t5R29asZNNdd6kGhaAea+Ibm5jlYZOK55Fnunxyea9F1vRBckkLVPTPDKxuGda6YzSRg4tsydG8OvKwZ1rtrDS4bSMHaOKtWtnHbqAAOKg1bUEs7dmLAYFZSm5GijYx/E+tx2NuyIwBxXD6X52ragGOSCaz/EetyalfGGNsjOK7PwPo/lxLM68mlsg3Z12mWi21oBjtWHq8m2579a6kgJER2ArjNcm23XXvRHVjkb1nGLmz2n0rhvElpJp10ZowQM5rvfDcM9zANiEj6VF4q8J3t5aO6QliB2qW0mXGnOSukY3hLxAtwiwyPz0rscJKvIBzXiMFxeeH9V8mdWTDdDXq+gasl9bKwcHihonbRjtU0C1vkIaMZPtXnHiT4fnLSW6Y+leu5JqKWCOYYdQaE7BY8d8L+Hr+0vFDhsA169psZjt1Vs5ApkemwRvuVBVtflGBQ3cEh9FNyaMmkMdRTcmjJoAdRTcmjJoAdRTcmjJoAdRTcmjJoAdRTcmjJoAdRTcmjJoAdRTcmjJoAdSN900mTRk0AcH4z8Oy6qGCqTmvOZfhhO7lvLPPtXv7xI/3lFR/ZIP7g/KqU2iXG54D/wAKtn/55H8qP+FXT/8API/lXv32SD+4Pyo+yQf3B+VP2jFyHi+hfD6exuVk2EYPpXruiWzW1sqN2FXBawjkIB+FSqAvAqXLmGlYfRk+tNyaMmkUOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AOopuTRk0AN3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBGRG6ihURegpaQ8CncBlzcLDGWY4wK8w8deKAoaCJ/brXYeKbuWC1fy89K8Q1T7ZqGokMCQWqools1/CthJqd8JXBIzmvbNIs1tbZFAxgVxngPQ/s8CSMvOK9ARdqgUSYRQTn92SK5aDSJdb1xbdR8inLfSumuDiI/Sn+CUiN/cOQN/ap5uVNo2oU1UqqLOr0/T7fTrdYIIwoAwaskAjBFFFcu59AkkrI4T4keBrTWdLlvbSBVuohuyB1ryzwbrstldmwuCQUbaa+i50WSF0YAgqQa8IvPCrxeJp7iFMIZCRit6crqzPLzCkotTR6HaziaIOO4qbcKpadC0MCq3YVcqjzxdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAF3CjcKSijQBdwo3Ckoo0AXcKNwpKKNAGUU3caNxp6gOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqBS1LT0vYyjDrXL/APCEwC683yx1z0rtdxpOPQU02KxW06yS0iCKuMVcpuaNxpDGznER+lczY+Iv7B19Xc/u5G2tntXSznMR+leZ+LmK3BI9auK5tGJTdOSkt0fQFneW99As9vIrqwzwamrxbwF4h1G2URLOSnoTXoh1+6kj4wM9655UnF2PXhmFOUby3NnUbyO2gYZG4jAFck0EbSGQqMk5qaW4lmYvIxJNR7jVxjynDiK7ryv0HAAcCim7jRuNUc46im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agOopu40bjRqA6im7jRuNGoDqKbuNG40agJketGR602imA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9abRQA7I9aMj1ptFADsj1oyPWm0UAOyPWjI9a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PWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAF3e1G72pMj1oyPWgBd3tRu9qTI9aMj1oAXd7UbvakyPWjI9aAGUUm40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQAtFJuNG40ALRSbjRuNAC0Um40bjQB//2Q==";
+
+  const POLYHAVEN_HDRI_ID = "studio_small_03"; // bright, high-contrast studio softbox setup - good for gem facet definition
+  const POLYHAVEN_RESOLUTION = "1k";
+
+  async function getPolyHavenHDRUrl(assetId, resolution) {
+    const filesResponse = await fetch("https://api.polyhaven.com/files/" + assetId);
+    if (!filesResponse.ok) throw new Error("Poly Haven API request failed: " + filesResponse.status);
+    const filesData = await filesResponse.json();
+    const hdrUrl = filesData && filesData.hdri && filesData.hdri[resolution] && filesData.hdri[resolution].hdr && filesData.hdri[resolution].hdr.url;
+    if (!hdrUrl) throw new Error("Could not find HDR file URL in Poly Haven response for " + assetId + " @ " + resolution);
+    return hdrUrl;
+  }
+
+  function base64ToObjectUrl(dataUri) {
+    // Converts our embedded base64 sparkle texture into a real Blob URL,
+    // so it's usable anywhere a fetchable URL is expected (safer than
+    // assuming a loader accepts data: URIs directly).
+    const [header, b64] = dataUri.split(",");
+    const mime = /data:(.*?);base64/.exec(header)[1];
+    const bytes = atob(b64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const blob = new Blob([arr], { type: mime });
+    return URL.createObjectURL(blob);
+  }
+
+  async function setupEnvironment() {
+    // 1. Try a real, properly-licensed CC0 studio HDRI first (best quality)
+    try {
+      const hdrUrl = await getPolyHavenHDRUrl(POLYHAVEN_HDRI_ID, POLYHAVEN_RESOLUTION);
+      await viewer.setEnvironmentMap(hdrUrl);
+      console.log("Environment: loaded Poly Haven HDRI '" + POLYHAVEN_HDRI_ID + "' (CC0) via Threepipe.");
+      return;
+    } catch (e) {
+      console.warn("Poly Haven HDRI failed to load (offline, CORS, or API change?) - falling back to the built-in sparkle texture.", e);
+    }
+    // 2. Fall back to the procedurally-generated sparkle texture
+    try {
+      const objectUrl = base64ToObjectUrl(SPARKLE_ENV_DATA_URI);
+      await viewer.setEnvironmentMap(objectUrl);
+      console.log("Environment: using built-in procedural sparkle texture via Threepipe.");
+      return;
+    } catch (e) {
+      console.warn("Sparkle environment texture failed to load via Threepipe.setEnvironmentMap.", e);
+    }
+    console.warn("Environment: no environment map could be loaded - materials may look flat.");
+  }
+  await setupEnvironment();
+
+  // Threepipe's built-in camera controls (OrbitControls-equivalent). Try
+  // the documented/likely property paths defensively, since exact access
+  // wasn't confirmed against a live build.
+  const controls = (camera && camera.controls) || (viewer.scene && viewer.scene.mainCamera && viewer.scene.mainCamera.controls) || null;
+  if (controls) {
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    try {
+      // Left button reserved for click/drag selection; orbit moves to the
+      // right button, pan to the middle button. Scroll wheel still zooms.
+      controls.mouseButtons = {
+        LEFT: null,
+        MIDDLE: (THREE.MOUSE && THREE.MOUSE.PAN) ?? 2,
+        RIGHT: (THREE.MOUSE && THREE.MOUSE.ROTATE) ?? 0,
+      };
+      controls.touches = {
+        ONE: (THREE.TOUCH && THREE.TOUCH.ROTATE) ?? 0,
+        TWO: (THREE.TOUCH && THREE.TOUCH.DOLLY_PAN) ?? 2,
+      };
+    } catch (e) {
+      console.warn("Could not configure custom mouse/touch button mapping on Threepipe's controls.", e);
+    }
+  } else {
+    console.warn("Could not find Threepipe's camera controls instance - orbit/pan/zoom will use its default mouse mapping (box-select via left-drag may not work correctly until this is resolved).");
+  }
+
+  let selectModeActive = false; // touch-only: true = one-finger drag box-selects instead of orbiting
+  const touchSelectBtn = $("btn-touch-select-mode");
+  if (touchSelectBtn) {
+    touchSelectBtn.addEventListener("click", () => {
+      selectModeActive = !selectModeActive;
+      if (controls) controls.enabled = !selectModeActive;
+      touchSelectBtn.textContent = "Box Select: " + (selectModeActive ? "On" : "Off");
+      touchSelectBtn.classList.toggle("active", selectModeActive);
+    });
+  }
+
+  // Lights are a secondary, gentle fill on top of the environment map -
+  // most of the shading/highlight definition comes from the environment.
+  scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+  const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.4);
+  dirLight1.position.set(1, 2, 1);
+  scene.add(dirLight1);
+  const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.2);
+  dirLight2.position.set(-1, -1, -1);
+  scene.add(dirLight2);
+
+  // No manual resize handler or render loop needed - Threepipe's
+  // ThreeViewer manages canvas sizing (via its own ResizeObserver) and
+  // runs its own internal render loop automatically.
+
+  // ============================================================
+  // Stone data model
+  // ============================================================
+  let stones = [];        // { threeMesh, verticesMM, facesTri, category, selected, ... }
+  let raycaster = new THREE.Raycaster();
+  let mouse = new THREE.Vector2();
+
+  const DEFAULT_MATERIAL_COLOR = 0x8a8a92;
+
+  // ============================================================
+  // Material presets: gem types (get calculated for ct weight) and
+  // metal colors (displayed, but excluded from ct weight calculations
+  // since gold isn't measured that way).
+  //
+  // Colors and finish levels are refined against the user's reference
+  // materials from the "Free Jewels" Rhino plugin (WhiteGold_18ct,
+  // YellowGold_18ct, Diamond, Saphir):
+  //   - Gloss 90% (metals) / 100% (gems) -> mapped to roughness
+  //   - Reflectivity swatch colors -> base color tones
+  // Note: that plugin's Diamond/Saphir materials use IOR 1.00 and only
+  // 20% transparency - which reveals they're not doing true optical
+  // transmission, but a glossy-opaque surface + a baked environment
+  // reflection image (Dia3.jpg) faking the sparkle instead. Porting
+  // those exact numbers here would look worse (cloudy/flat) since our
+  // renderer computes real refraction - so IOR/transmission below stay
+  // physically accurate instead:
+  //   Diamond:  IOR 2.42  (highest of common gems - strong Fresnel "fire")
+  //   Sapphire: IOR 1.77  (corundum family)
+  //   Emerald:  IOR 1.58  (beryl family, slightly softer/more included look)
+  // ============================================================
+  const MATERIAL_PRESETS = {
+    diamond: {
+      label: "Diamond", isGem: true,
+      // IOR 2.42 gives a critical angle of ~24.4° (arcsin(1/IOR)) - only
+      // about 9% of a hemisphere of internal light directions actually
+      // falls within that transmissive cone; the rest undergoes total
+      // internal reflection (this is *why* diamonds sparkle instead of
+      // looking like glass). Three.js's transmission model only computes
+      // a single pass through the material (no multi-bounce TIR
+      // simulation), so transmission:1.0 reads as much more "see-through"
+      // than a real diamond - reduced here, informed by that calculation,
+      // and compensated with higher clearcoat/envMapIntensity so it stays
+      // bright and reflective rather than looking dim.
+      color: 0xffffff, metalness: 0, roughness: 0.0,
+      clearcoat: 1.0, clearcoatRoughness: 0.0,
+      transmission: 0.55, ior: 2.42, thickness: 2.5,
+      attenuationColor: 0xffffff, attenuationDistance: 100,
+      specularIntensity: 1.0, specularColor: 0xffffff,
+      envMapIntensity: 1.6,
+      transparent: false, opacity: 1.0,
+    },
+    sapphire: {
+      label: "Sapphire", isGem: true,
+      color: 0x163f7a, metalness: 0, roughness: 0.0,
+      clearcoat: 1.0, clearcoatRoughness: 0.0,
+      transmission: 0.95, ior: 1.77, thickness: 2.0,
+      attenuationColor: 0x1f4f95, attenuationDistance: 3.0,
+      specularIntensity: 1.0, specularColor: 0xffffff,
+      envMapIntensity: 1.3,
+      transparent: false, opacity: 1.0,
+    },
+    emerald: {
+      label: "Emerald", isGem: true,
+      color: 0x1f7a4d, metalness: 0, roughness: 0.05,
+      clearcoat: 1.0, clearcoatRoughness: 0.06,
+      transmission: 0.9, ior: 1.58, thickness: 2.0,
+      attenuationColor: 0x2e9760, attenuationDistance: 2.0,
+      specularIntensity: 1.0, specularColor: 0xffffff,
+      envMapIntensity: 1.2,
+      transparent: false, opacity: 1.0,
+    },
+    white_gold: {
+      label: "White Gold", isGem: false,
+      color: 0xdcdce0, metalness: 1.0, roughness: 0.10,
+      clearcoat: 0, clearcoatRoughness: 0,
+      transmission: 0, ior: 1.5, thickness: 0,
+      envMapIntensity: 1.1,
+      transparent: false, opacity: 1.0,
+    },
+    yellow_gold: {
+      label: "Yellow Gold", isGem: false,
+      color: 0xe6b84a, metalness: 1.0, roughness: 0.10,
+      clearcoat: 0, clearcoatRoughness: 0,
+      transmission: 0, ior: 1.5, thickness: 0,
+      envMapIntensity: 1.1,
+      transparent: false, opacity: 1.0,
+    },
+    pink_gold: {
+      label: "Pink Gold", isGem: false,
+      color: 0xd9a088, metalness: 1.0, roughness: 0.10,
+      clearcoat: 0, clearcoatRoughness: 0,
+      transmission: 0, ior: 1.5, thickness: 0,
+      envMapIntensity: 1.1,
+      transparent: false, opacity: 1.0,
+    },
+  };
+
+  function applyMaterialPreset(stone, roleKey) {
+    const mat = stone.threeMesh.material;
+    if (!roleKey || !MATERIAL_PRESETS[roleKey]) {
+      stone.materialRole = null;
+      mat.color.setHex(DEFAULT_MATERIAL_COLOR);
+      mat.metalness = 0.1;
+      mat.roughness = 0.35;
+      mat.clearcoat = 0;
+      mat.clearcoatRoughness = 0;
+      mat.transmission = 0;
+      mat.thickness = 0;
+      mat.transparent = false;
+      mat.opacity = 1.0;
+      mat.envMapIntensity = 1.0;
+      mat.needsUpdate = true;
+      return;
+    }
+    const preset = MATERIAL_PRESETS[roleKey];
+    stone.materialRole = roleKey;
+    mat.color.setHex(preset.color);
+    mat.metalness = preset.metalness;
+    mat.roughness = preset.roughness;
+    mat.clearcoat = preset.clearcoat;
+    mat.clearcoatRoughness = preset.clearcoatRoughness;
+    mat.transparent = preset.transparent;
+    mat.opacity = preset.opacity;
+    // These MeshPhysicalMaterial properties (transmission/ior/thickness/
+    // attenuation, the "Volume" extension) may not exist on older three.js
+    // builds - setting them is harmless even if unsupported, so no guard
+    // is needed, but real refraction only appears if the loaded version
+    // supports them.
+    if (preset.transmission !== undefined) mat.transmission = preset.transmission;
+    if (preset.ior !== undefined) mat.ior = preset.ior;
+    if (preset.thickness !== undefined) mat.thickness = preset.thickness;
+    if (preset.attenuationColor !== undefined) mat.attenuationColor = new THREE.Color(preset.attenuationColor);
+    if (preset.attenuationDistance !== undefined) mat.attenuationDistance = preset.attenuationDistance;
+    if (preset.specularIntensity !== undefined) mat.specularIntensity = preset.specularIntensity;
+    if (preset.specularColor !== undefined) mat.specularColor = new THREE.Color(preset.specularColor);
+    if (preset.envMapIntensity !== undefined) mat.envMapIntensity = preset.envMapIntensity;
+    mat.needsUpdate = true;
+  }
+
+  function clearScene() {
+    for (const s of stones) {
+      scene.remove(s.threeMesh);
+      s.threeMesh.geometry.dispose();
+      s.threeMesh.material.dispose();
+    }
+    stones = [];
+  }
+
+  function frameCameraToScene() {
+    if (!camera) return;
+    const box = new THREE.Box3();
+    for (const s of stones) box.expandByObject(s.threeMesh);
+    if (box.isEmpty()) return;
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const dist = maxDim * 2.2;
+    camera.position.set(center.x + dist, center.y + dist, center.z + dist);
+    camera.near = maxDim / 100;
+    camera.far = maxDim * 100;
+    camera.updateProjectionMatrix();
+    if (controls) {
+      if (controls.target && controls.target.copy) controls.target.copy(center);
+      else if (controls.setTarget) controls.setTarget(center.x, center.y, center.z);
+      if (controls.update) controls.update();
+    } else {
+      camera.lookAt(center);
+    }
+  }
+
+  // ============================================================
+  // Unit conversion
+  // ============================================================
+  function getScaleToMM(rhino, file3dm) {
+    let us;
+    try { us = file3dm.settings().modelUnitSystem; } catch (e) { us = null; }
+    const table = new Map([
+      [rhino.UnitSystem.Millimeters, 1],
+      [rhino.UnitSystem.Centimeters, 10],
+      [rhino.UnitSystem.Meters, 1000],
+      [rhino.UnitSystem.Microns, 0.001],
+      [rhino.UnitSystem.Kilometers, 1e6],
+      [rhino.UnitSystem.Inches, 25.4],
+      [rhino.UnitSystem.Feet, 304.8],
+      [rhino.UnitSystem.Miles, 1609344],
+      [rhino.UnitSystem.Yards, 914.4],
+    ]);
+    if (us !== null && table.has(us)) {
+      return { scale: table.get(us), unitName: null };
+    }
+    return { scale: 1, unitName: String(us) };
+  }
+
+  // ============================================================
+  // Extracting mesh data per object (Mesh objects directly,
+  // Brep objects via their per-face baked render mesh, Block
+  // Instances via recursive resolution of their definition).
+  // These return RAW vertices in file units (no scale, but with
+  // any block-instance transforms already applied) - unit scale
+  // to mm is applied once, uniformly, after extraction.
+  // ============================================================
+  const IDENTITY_XFORM = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]];
+
+  function extractMeshFromRhinoMesh(rhinoMesh) {
+    const vcount = rhinoMesh.vertices().count;
+    const vertices = [];
+    for (let i = 0; i < vcount; i++) {
+      const v = rhinoMesh.vertices().get(i);
+      vertices.push([v[0], v[1], v[2]]);
+    }
+    const fcount = rhinoMesh.faces().count;
+    const faces = [];
+    for (let i = 0; i < fcount; i++) {
+      const f = rhinoMesh.faces().get(i);
+      faces.push([f[0], f[1], f[2]]);
+      if (f[3] !== f[2]) faces.push([f[0], f[2], f[3]]);
+    }
+    return { vertices, faces };
+  }
+
+  function extractMeshFromBrep(rhino, brep) {
+    const combinedVertices = [];
+    const combinedFaces = [];
+    let faceCount = 0;
+    try { faceCount = brep.faces().count; } catch (e) { faceCount = 0; }
+
+    for (let fi = 0; fi < faceCount; fi++) {
+      let face = null, mesh = null;
+      try {
+        face = brep.faces().get(fi);
+        mesh = face.getMesh(rhino.MeshType.Any);
+      } catch (e) {
+        console.warn("Could not get baked mesh for brep face", fi, e);
+        mesh = null;
+      }
+      if (!mesh) continue;
+
+      const offset = combinedVertices.length;
+      const vcount = mesh.vertices().count;
+      for (let vi = 0; vi < vcount; vi++) {
+        const v = mesh.vertices().get(vi);
+        combinedVertices.push([v[0], v[1], v[2]]);
+      }
+      const fcount = mesh.faces().count;
+      for (let fj = 0; fj < fcount; fj++) {
+        const f = mesh.faces().get(fj);
+        combinedFaces.push([f[0]+offset, f[1]+offset, f[2]+offset]);
+        if (f[3] !== f[2]) combinedFaces.push([f[0]+offset, f[2]+offset, f[3]+offset]);
+      }
+      try { mesh.delete(); } catch (e) {}
+      try { face.delete(); } catch (e) {}
+    }
+    return { vertices: combinedVertices, faces: combinedFaces };
+  }
+
+  // Builds a lookup of object-id (GUID string) -> object, so block
+  // instance members can be found without re-scanning the whole file
+  // for every instance.
+  function buildObjectIdMap(file3dm) {
+    const map = new Map();
+    const objects = file3dm.objects();
+    for (let i = 0; i < objects.count; i++) {
+      const obj = objects.get(i);
+      try {
+        const id = obj.attributes().id;
+        if (id) map.set(id, obj);
+      } catch (e) { /* skip */ }
+    }
+    return map;
+  }
+
+  // Parses a rhino3dm Transform into a plain 4x4 row-major array.
+  // Tries several known shapes since the exact JS binding form isn't
+  // confirmed without live testing.
+  function getXformRows(xform) {
+    try {
+      if (xform && typeof xform.toFloatArray === "function") {
+        const flat = xform.toFloatArray(true);
+        if (flat && flat.length === 16) {
+          return [
+            [flat[0], flat[1], flat[2], flat[3]],
+            [flat[4], flat[5], flat[6], flat[7]],
+            [flat[8], flat[9], flat[10], flat[11]],
+            [flat[12], flat[13], flat[14], flat[15]],
+          ];
+        }
+      }
+    } catch (e) { /* fall through */ }
+
+    if (Array.isArray(xform) && Array.isArray(xform[0]) && xform.length === 4) {
+      return xform;
+    }
+    if (Array.isArray(xform) && xform.length === 16) {
+      return [
+        [xform[0], xform[1], xform[2], xform[3]],
+        [xform[4], xform[5], xform[6], xform[7]],
+        [xform[8], xform[9], xform[10], xform[11]],
+        [xform[12], xform[13], xform[14], xform[15]],
+      ];
+    }
+    if (xform && typeof xform.m00 === "number") {
+      return [
+        [xform.m00, xform.m01, xform.m02, xform.m03],
+        [xform.m10, xform.m11, xform.m12, xform.m13],
+        [xform.m20, xform.m21, xform.m22, xform.m23],
+        [xform.m30, xform.m31, xform.m32, xform.m33],
+      ];
+    }
+
+    console.warn("Could not interpret block instance transform (unrecognized shape) - using identity.", xform);
+    return IDENTITY_XFORM;
+  }
+
+  function composeXform(a, b) {
+    // a * b (apply b first, then a), both as 4x4 row arrays
+    const result = [];
+    for (let i = 0; i < 4; i++) {
+      const row = [];
+      for (let j = 0; j < 4; j++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) sum += a[i][k] * b[k][j];
+        row.push(sum);
+      }
+      result.push(row);
+    }
+    return result;
+  }
+
+  function applyXformToPoint(p, rows) {
+    const [x, y, z] = p;
+    const rx = rows[0][0]*x + rows[0][1]*y + rows[0][2]*z + rows[0][3];
+    const ry = rows[1][0]*x + rows[1][1]*y + rows[1][2]*z + rows[1][3];
+    const rz = rows[2][0]*x + rows[2][1]*y + rows[2][2]*z + rows[2][3];
+    const rw = rows[3][0]*x + rows[3][1]*y + rows[3][2]*z + rows[3][3];
+    if (rw && Math.abs(rw - 1) > 1e-9) return [rx/rw, ry/rw, rz/rw];
+    return [rx, ry, rz];
+  }
+
+  function transformMeshData(raw, xformRows) {
+    if (!raw) return null;
+    const vertices = raw.vertices.map(v => applyXformToPoint(v, xformRows));
+    return { vertices, faces: raw.faces };
+  }
+
+  // Recursively resolves any object into world-space (still in raw
+  // file units) mesh data: Mesh and Brep/Extrusion directly, and
+  // Block Instances by looking up their definition, resolving each
+  // member, and composing the instance's transform (handles nested
+  // blocks by accumulating transforms through the recursion).
+  function extractGeometryData(rhino, file3dm, obj, idMap, xformRows, depth) {
+    depth = depth || 0;
+    if (depth > 8) {
+      console.warn("Block instance nesting too deep (>8 levels) - stopping recursion to avoid a cycle.");
+      return null;
+    }
+
+    let geometry;
+    try { geometry = obj.geometry(); } catch (e) { return null; }
+    if (!geometry) return null;
+
+    const objType = geometry.objectType;
+
+    if (objType === rhino.ObjectType.Mesh) {
+      return transformMeshData(extractMeshFromRhinoMesh(geometry), xformRows);
+    }
+
+    if (objType === rhino.ObjectType.Brep || objType === rhino.ObjectType.Extrusion) {
+      let brep = geometry;
+      if (objType === rhino.ObjectType.Extrusion) {
+        brep = geometry.toBrep ? geometry.toBrep() : geometry;
+      }
+      return transformMeshData(extractMeshFromBrep(rhino, brep), xformRows);
+    }
+
+    if (objType === rhino.ObjectType.InstanceReference) {
+      let defId, localXform;
+      try {
+        defId = geometry.parentIdefId;
+        localXform = getXformRows(geometry.xform);
+      } catch (e) {
+        console.warn("Could not read block instance transform/definition id.", e);
+        return null;
+      }
+
+      let definition = null;
+      try {
+        const defs = file3dm.instanceDefinitions();
+        for (let i = 0; i < defs.count; i++) {
+          const d = defs.get(i);
+          let did;
+          try { did = d.id; } catch (e) { did = null; }
+          if (did === defId) { definition = d; break; }
+        }
+      } catch (e) {
+        console.warn("Could not access instance definitions table.", e);
+      }
+      if (!definition) {
+        console.warn("Block instance found but its definition could not be located (defId=" + defId + "). Skipping.");
+        return null;
+      }
+
+      let memberIds = [];
+      try { memberIds = definition.getObjectIds(); }
+      catch (e) {
+        try { memberIds = definition.objectIds || []; }
+        catch (e2) { memberIds = []; }
+      }
+      if (!memberIds.length) {
+        console.warn("Block definition has no resolvable member object ids.");
+        return null;
+      }
+
+      const combinedXform = composeXform(xformRows, localXform);
+      const combinedVertices = [];
+      const combinedFaces = [];
+
+      for (const memberId of memberIds) {
+        const memberObj = idMap.get(memberId);
+        if (!memberObj) { console.warn("Block member id not found in file objects:", memberId); continue; }
+        const memberData = extractGeometryData(rhino, file3dm, memberObj, idMap, combinedXform, depth + 1);
+        if (!memberData) continue;
+        const offset = combinedVertices.length;
+        combinedVertices.push(...memberData.vertices);
+        for (const f of memberData.faces) combinedFaces.push([f[0]+offset, f[1]+offset, f[2]+offset]);
+      }
+
+      return { vertices: combinedVertices, faces: combinedFaces };
+    }
+
+    return null; // unsupported type (curve, point, light, etc.)
+  }
+
+  // ============================================================
+  // File loading
+  // ============================================================
+  let rhinoModule = null;
+
+  async function ensureRhino3dm() {
+    if (rhinoModule) return rhinoModule;
+    setStatus("Loading rhino3dm engine...");
+    rhinoModule = await rhino3dm();
+    setStatus("rhino3dm ready.", "ok");
+    return rhinoModule;
+  }
+
+  async function loadFile(file) {
+    setStatus("Reading file...");
+    clearScene();
+    $("report-empty").style.display = "block";
+    $("report-content").style.display = "none";
+    $("grand-total").style.display = "none";
+    $("btn-copy").disabled = true;
+
+    const rhino = await ensureRhino3dm();
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    let file3dm;
+    try {
+      file3dm = rhino.File3dm.fromByteArray(bytes);
+    } catch (e) {
+      setStatus("Failed to parse 3dm file: " + e.message, "err");
+      console.error(e);
+      return;
+    }
+    if (!file3dm) {
+      setStatus("Failed to parse 3dm file (no data returned).", "err");
+      return;
+    }
+
+    const { scale, unitName } = getScaleToMM(rhino, file3dm);
+    if (unitName) {
+      $("unit-warning").textContent = "Unknown unit system (" + unitName + ") - assuming millimeters.";
+    } else {
+      $("unit-warning").textContent = "";
+    }
+
+    const objects = file3dm.objects();
+    const layers = file3dm.layers();
+    const idMap = buildObjectIdMap(file3dm);
+    let loadedCount = 0, skippedCount = 0, blockCount = 0;
+
+    for (let i = 0; i < objects.count; i++) {
+      const obj = objects.get(i);
+      let geometry, attributes;
+      try {
+        geometry = obj.geometry();
+        attributes = obj.attributes();
+      } catch (e) {
+        skippedCount++;
+        continue;
+      }
+      if (!geometry) { skippedCount++; continue; }
+
+      // Objects that exist only as block-definition geometry shouldn't
+      // be counted as independent top-level stones - their geometry
+      // gets pulled in via the instance reference that uses them.
+      try {
+        const mode = attributes.mode;
+        if (mode === rhino.ObjectMode.InstanceDefinitionObject) {
+          skippedCount++;
+          continue;
+        }
+      } catch (e) { /* if we can't tell, fall through and process normally */ }
+
+      // Block instance members are only meant to appear in the scene
+      // via their instance reference, not as separate top-level stones.
+      // We can't reliably tell "is this a block definition member" up
+      // front without cross-referencing every definition, so instead
+      // we only skip an object here if it's an instance reference -
+      // its members get pulled in during extraction below.
+      const objType = geometry.objectType;
+      let meshDataRaw = null;
+
+      try {
+        meshDataRaw = extractGeometryData(rhino, file3dm, obj, idMap, IDENTITY_XFORM, 0);
+      } catch (e) {
+        console.warn("Error extracting geometry for object", i, e);
+        meshDataRaw = null;
+      }
+
+      if (!meshDataRaw || meshDataRaw.vertices.length < 4 || meshDataRaw.faces.length < 4) {
+        skippedCount++;
+        continue;
+      }
+
+      if (objType === rhino.ObjectType.InstanceReference) blockCount++;
+
+      // Apply unit scale to mm once, uniformly, regardless of source type
+      const meshData = {
+        vertices: meshDataRaw.vertices.map(v => [v[0]*scale, v[1]*scale, v[2]*scale]),
+        faces: meshDataRaw.faces,
+      };
+
+      // category from layer name (last segment if nested, e.g. "Diamonds::Oval")
+      let category = "Unspecified";
+      try {
+        const layer = layers.get(attributes.layerIndex);
+        const layerName = (layer.fullPath || layer.name || "").toString();
+        if (layerName) {
+          const parts = layerName.split("::");
+          const leaf = parts[parts.length - 1].trim();
+          if (leaf && leaf.toLowerCase() !== "default") category = leaf;
+        }
+      } catch (e) { /* leave as Unspecified */ }
+
+      // Build three.js buffer geometry for display
+      const positions = new Float32Array(meshData.vertices.length * 3);
+      meshData.vertices.forEach((v, vi) => {
+        positions[vi*3] = v[0]; positions[vi*3+1] = v[1]; positions[vi*3+2] = v[2];
+      });
+      const indices = [];
+      meshData.faces.forEach(f => indices.push(f[0], f[1], f[2]));
+
+      const bufferGeom = new THREE.BufferGeometry();
+      bufferGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      bufferGeom.setIndex(indices);
+      bufferGeom.computeVertexNormals();
+
+      const material = new THREE.MeshPhysicalMaterial({
+        color: DEFAULT_MATERIAL_COLOR,
+        metalness: 0.1,
+        roughness: 0.35,
+        clearcoat: 0,
+        clearcoatRoughness: 0,
+        transmission: 0,
+        ior: 1.5,
+        thickness: 0,
+        transparent: false,
+        opacity: 1.0,
+        flatShading: true,
+      });
+      const threeMesh = new THREE.Mesh(bufferGeom, material);
+      scene.add(threeMesh);
+
+      const stone = {
+        index: i,
+        threeMesh,
+        verticesMM: meshData.vertices,
+        facesTri: meshData.faces,
+        category,
+        selected: false,
+        materialRole: null, // 'diamond' | 'sapphire' | 'emerald' | 'white_gold' | 'yellow_gold' | 'pink_gold' | null
+        volumeCT: null,
+        lengthMM: null,
+        widthMM: null,
+      };
+      threeMesh.userData.stone = stone;
+      stones.push(stone);
+      loadedCount++;
+    }
+
+    file3dm.delete();
+
+    setStatus(
+      "Loaded " + loadedCount + " stone(s)"
+        + (blockCount ? " (" + blockCount + " from block instances)" : "")
+        + (skippedCount ? ", skipped " + skippedCount : "") + ".",
+      loadedCount > 0 ? "ok" : "err"
+    );
+    $("viewport-empty").style.display = stones.length ? "none" : "flex";
+    updateSelectionUI();
+    frameCameraToScene();
+  }
+
+  // ============================================================
+  // Selection handling: click (toggle one stone) vs drag (box-select).
+  // Left button only - right-drag orbits, middle-drag pans (see
+  // controls.mouseButtons above).
+  // ============================================================
+  const marqueeEl = $("marquee");
+  const DRAG_THRESHOLD_PX = 4;
+  let dragStart = null;
+  let isDragging = false;
+
+  function getLocalPos(event) {
+    const rect = viewportEl.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  function handleSingleClick(event) {
+    if (!stones.length || !renderer || !camera) return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(stones.filter(s => s.threeMesh.visible).map(s => s.threeMesh));
+    if (hits.length === 0) return;
+    const stone = hits[0].object.userData.stone;
+    toggleSelection(stone);
+  }
+
+  function selectStonesInRect(minX, minY, maxX, maxY, mode) {
+    // mode: 'add' (default drag) or 'remove' (Ctrl/Cmd+drag)
+    const rect = viewportEl.getBoundingClientRect();
+    const enclosed = [];
+
+    for (const stone of stones) {
+      if (!stone.threeMesh.visible) continue;
+      const box = new THREE.Box3().setFromObject(stone.threeMesh);
+      if (box.isEmpty()) continue;
+
+      const corners = [
+        [box.min.x, box.min.y, box.min.z], [box.min.x, box.min.y, box.max.z],
+        [box.min.x, box.max.y, box.min.z], [box.min.x, box.max.y, box.max.z],
+        [box.max.x, box.min.y, box.min.z], [box.max.x, box.min.y, box.max.z],
+        [box.max.x, box.max.y, box.min.z], [box.max.x, box.max.y, box.max.z],
+      ];
+
+      let sMinX = Infinity, sMinY = Infinity, sMaxX = -Infinity, sMaxY = -Infinity;
+      let anyVisible = false;
+      for (const c of corners) {
+        const v = new THREE.Vector3(c[0], c[1], c[2]).project(camera);
+        if (v.z > 1 || v.z < -1) continue; // behind camera or outside clip range
+        anyVisible = true;
+        const sx = (v.x * 0.5 + 0.5) * rect.width;
+        const sy = (-v.y * 0.5 + 0.5) * rect.height;
+        sMinX = Math.min(sMinX, sx); sMaxX = Math.max(sMaxX, sx);
+        sMinY = Math.min(sMinY, sy); sMaxY = Math.max(sMaxY, sy);
+      }
+      if (!anyVisible) continue;
+
+      // Crossing-style overlap test: any part of the stone's screen-space
+      // bounding box touching the drag rectangle counts as enclosed.
+      const overlaps = !(sMaxX < minX || sMinX > maxX || sMaxY < minY || sMinY > maxY);
+      if (overlaps) enclosed.push(stone);
+    }
+
+    if (mode === "remove") {
+      for (const s of enclosed) s.selected = false;
+    } else {
+      for (const s of enclosed) s.selected = true;
+    }
+    for (const s of stones) applySelectionHighlight(s);
+    updateSelectionUI();
+    return enclosed.length;
+  }
+
+  let pendingTapOnly = false; // touch, orbit mode: track for tap-detection only, no box-select/marquee
+  let activePointerCount = 0;
+
+  if (renderer && renderer.domElement) {
+    renderer.domElement.addEventListener("pointerdown", (event) => {
+    activePointerCount++;
+    if (activePointerCount > 1) {
+      // A second finger just touched down mid-gesture - this is a pinch/pan,
+      // not a select gesture. Bail out and let OrbitControls handle it fully.
+      dragStart = null;
+      isDragging = false;
+      pendingTapOnly = false;
+      marqueeEl.style.display = "none";
+      return;
+    }
+    if (!stones.length) return;
+    const isTouch = event.pointerType === "touch" || event.pointerType === "pen";
+
+    if (isTouch) {
+      pendingTapOnly = !selectModeActive; // in orbit mode, only watch for a tap; a drag is orbiting, not ours
+    } else {
+      if (event.button !== 0) return; // mouse: left button only
+      pendingTapOnly = false;
+    }
+    dragStart = getLocalPos(event);
+    isDragging = false;
+    });
+  }
+
+  window.addEventListener("pointermove", (event) => {
+    if (!dragStart) return;
+    const pos = getLocalPos(event);
+    const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
+    if (!isDragging && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+      isDragging = true;
+      if (!pendingTapOnly) marqueeEl.style.display = "block";
+    }
+    if (isDragging && !pendingTapOnly) {
+      const left = Math.min(dragStart.x, pos.x);
+      const top = Math.min(dragStart.y, pos.y);
+      marqueeEl.style.left = left + "px";
+      marqueeEl.style.top = top + "px";
+      marqueeEl.style.width = Math.abs(dx) + "px";
+      marqueeEl.style.height = Math.abs(dy) + "px";
+    }
+  });
+
+  window.addEventListener("pointerup", (event) => {
+    activePointerCount = Math.max(0, activePointerCount - 1);
+    if (!dragStart) return;
+    const isTouch = event.pointerType === "touch" || event.pointerType === "pen";
+    if (!isTouch && event.button !== 0) { dragStart = null; isDragging = false; pendingTapOnly = false; marqueeEl.style.display = "none"; return; }
+
+    if (isDragging) {
+      if (!pendingTapOnly) {
+        const pos = getLocalPos(event);
+        const minX = Math.min(dragStart.x, pos.x), maxX = Math.max(dragStart.x, pos.x);
+        const minY = Math.min(dragStart.y, pos.y), maxY = Math.max(dragStart.y, pos.y);
+        const mode = (event.ctrlKey || event.metaKey) ? "remove" : "add";
+        const count = selectStonesInRect(minX, minY, maxX, maxY, mode);
+        if (count) setStatus((mode === "remove" ? "Deselected " : "Selected ") + count + " stone(s) via box-select.", "ok");
+      }
+      // else: this was just an orbit drag on touch - do nothing
+    } else {
+      handleSingleClick(event);
+    }
+
+    marqueeEl.style.display = "none";
+    dragStart = null;
+    isDragging = false;
+    pendingTapOnly = false;
+  });
+
+  window.addEventListener("pointercancel", () => {
+    activePointerCount = 0;
+    dragStart = null;
+    isDragging = false;
+    pendingTapOnly = false;
+    marqueeEl.style.display = "none";
+  });
+
+  function toggleSelection(stone) {
+    stone.selected = !stone.selected;
+    applySelectionHighlight(stone);
+    updateSelectionUI();
+  }
+
+  function applySelectionHighlight(stone) {
+    if (stone.selected) {
+      stone.threeMesh.material.emissive = new THREE.Color(0xc9974c);
+      stone.threeMesh.material.emissiveIntensity = 0.35;
+    } else {
+      stone.threeMesh.material.emissive = new THREE.Color(0x000000);
+      stone.threeMesh.material.emissiveIntensity = 0;
+    }
+  }
+
+  function updateSelectionUI() {
+    const total = stones.length;
+    const visibleStones = stones.filter(s => s.threeMesh.visible);
+    const hiddenCount = total - visibleStones.length;
+    const selectedCount = visibleStones.filter(s => s.selected).length;
+
+    let label = total ? "<strong>" + selectedCount + "</strong> of " + visibleStones.length + " visible stones selected" : "No stones loaded";
+    if (hiddenCount > 0) label += " &middot; " + hiddenCount + " hidden";
+    $("selection-count").innerHTML = label;
+
+    $("btn-select-all").disabled = visibleStones.length === 0;
+    $("btn-clear-selection").disabled = selectedCount === 0;
+    $("btn-calculate").disabled = selectedCount === 0;
+    $("btn-hide-selected").disabled = selectedCount === 0;
+    $("btn-show-all").disabled = hiddenCount === 0;
+
+    document.querySelectorAll(".material-btn").forEach(btn => { btn.disabled = selectedCount === 0; });
+    $("btn-clear-material").disabled = selectedCount === 0;
+    $("btn-restore-material-look").disabled = total === 0;
+
+    const handleSummary = $("panel-handle-summary");
+    if (handleSummary) {
+      handleSummary.textContent = total
+        ? selectedCount + " of " + visibleStones.length + " selected" + (hiddenCount ? " · " + hiddenCount + " hidden" : "")
+        : "Tap for selection & report";
+    }
+  }
+
+  $("btn-select-all").addEventListener("click", () => {
+    for (const s of stones) {
+      if (!s.threeMesh.visible) continue;
+      s.selected = true;
+      applySelectionHighlight(s);
+    }
+    updateSelectionUI();
+  });
+  $("btn-clear-selection").addEventListener("click", () => {
+    for (const s of stones) { s.selected = false; applySelectionHighlight(s); }
+    updateSelectionUI();
+  });
+  $("btn-hide-selected").addEventListener("click", () => {
+    let hiddenNow = 0;
+    for (const s of stones) {
+      if (s.selected) {
+        s.threeMesh.visible = false;
+        s.selected = false;
+        applySelectionHighlight(s);
+        hiddenNow++;
+      }
+    }
+    updateSelectionUI();
+    if (hiddenNow) setStatus("Hid " + hiddenNow + " stone(s). Use Show All to bring them back.", "ok");
+  });
+  $("btn-show-all").addEventListener("click", () => {
+    for (const s of stones) { s.threeMesh.visible = true; }
+    updateSelectionUI();
+    setStatus("All stones visible again.", "ok");
+  });
+
+  // ============================================================
+  // Material assignment (gem type / metal color)
+  // ============================================================
+  document.querySelectorAll(".material-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const role = btn.dataset.role;
+      const selected = stones.filter(s => s.selected);
+      if (!selected.length) return;
+      for (const stone of selected) applyMaterialPreset(stone, role);
+      setStatus("Applied " + MATERIAL_PRESETS[role].label + " to " + selected.length + " stone(s).", "ok");
+    });
+  });
+
+  $("btn-clear-material").addEventListener("click", () => {
+    const selected = stones.filter(s => s.selected);
+    if (!selected.length) return;
+    for (const stone of selected) applyMaterialPreset(stone, null);
+    setStatus("Cleared material on " + selected.length + " stone(s).", "ok");
+  });
+
+  $("btn-restore-material-look").addEventListener("click", () => {
+    let restored = 0;
+    for (const stone of stones) {
+      if (stone.materialRole) { applyMaterialPreset(stone, stone.materialRole); restored++; }
+    }
+    setStatus(restored ? "Restored natural material look on " + restored + " stone(s)." : "No stones have a material assigned yet.", "ok");
+  });
+
+  // ============================================================
+  // Calculate + group + color + report
+  // ============================================================
+  let lastReport = null; // stores category data for clipboard export
+
+  $("btn-calculate").addEventListener("click", () => {
+    const allSelected = stones.filter(s => s.selected);
+    if (!allSelected.length) return;
+
+    const metalExcluded = allSelected.filter(s => s.materialRole && MATERIAL_PRESETS[s.materialRole] && !MATERIAL_PRESETS[s.materialRole].isGem);
+    const selected = allSelected.filter(s => !(s.materialRole && MATERIAL_PRESETS[s.materialRole] && !MATERIAL_PRESETS[s.materialRole].isGem));
+
+    if (!selected.length) {
+      setStatus("All selected stones are tagged as metal - nothing to calculate. Metal isn't measured in ct.", "err");
+      return;
+    }
+
+    setStatus("Calculating...");
+    const results = [];
+    for (const stone of selected) {
+      let volumeMM3;
+      try {
+        volumeMM3 = meshVolumeMM3(stone.verticesMM, stone.facesTri);
+      } catch (e) {
+        console.warn("Volume calc failed for stone", stone.index, e);
+        continue;
+      }
+      const volumeCM3 = volumeMM3 / 1000.0;
+      const weightGrams = volumeCM3 * DIAMOND_DENSITY;
+      const ctWeight = weightGrams / GRAMS_PER_CARAT;
+
+      const dims = fitPlaneAndMeasure(stone.verticesMM);
+      if (!dims) continue;
+      const lengthMM = roundUpMM(dims[0]);
+      const widthMM = roundUpMM(dims[1]);
+
+      stone.volumeCT = ctWeight;
+      stone.lengthMM = lengthMM;
+      stone.widthMM = widthMM;
+
+      results.push({ stone, category: stone.category, ct: ctWeight, length: lengthMM, width: widthMM });
+    }
+
+    if (!results.length) {
+      setStatus("Could not calculate any selected stones - check console for details.", "err");
+      return;
+    }
+
+    // Group by category + length + width + ct(rounded to 3dp)
+    const groupMap = new Map();
+    for (const r of results) {
+      const key = [r.category, r.length.toFixed(1), r.width.toFixed(1), r.ct.toFixed(3)].join("|");
+      if (!groupMap.has(key)) groupMap.set(key, { category: r.category, length: r.length, width: r.width, ct: r.ct, stones: [] });
+      groupMap.get(key).stones.push(r.stone);
+    }
+
+    const sortedKeys = Array.from(groupMap.keys()).sort((a, b) => {
+      const ga = groupMap.get(a), gb = groupMap.get(b);
+      if (ga.category !== gb.category) return ga.category < gb.category ? -1 : 1;
+      if (ga.length !== gb.length) return ga.length - gb.length;
+      if (ga.width !== gb.width) return ga.width - gb.width;
+      return ga.ct - gb.ct;
+    });
+
+    sortedKeys.forEach((key, i) => {
+      const group = groupMap.get(key);
+      const uniqueRoles = new Set(group.stones.map(s => s.materialRole || null));
+
+      if (uniqueRoles.size === 1 && [...uniqueRoles][0]) {
+        // Every stone in this group already has the SAME assigned gem/metal
+        // material - reflect that material's real name/color in the report
+        // instead of a coincidental identification color, and leave the
+        // stones' actual rendered color untouched.
+        const role = [...uniqueRoles][0];
+        const preset = MATERIAL_PRESETS[role];
+        group.colorName = preset.label;
+        group.rgb = [(preset.color >> 16) & 255, (preset.color >> 8) & 255, preset.color & 255];
+      } else if (uniqueRoles.size > 1) {
+        // Mixed materials sharing the same dimensions/ct - fall back to a
+        // palette color so the group is still visually identifiable, but
+        // only apply it to stones that don't already have a material.
+        const [colorName, rgb] = COLOR_PALETTE[i % COLOR_PALETTE.length];
+        group.colorName = colorName + " (mixed materials)";
+        group.rgb = rgb;
+        for (const stone of group.stones) {
+          if (!stone.materialRole) stone.threeMesh.material.color.setRGB(rgb[0]/255, rgb[1]/255, rgb[2]/255);
+        }
+      } else {
+        // No material assigned yet - use the palette for identification, as before
+        const [colorName, rgb] = COLOR_PALETTE[i % COLOR_PALETTE.length];
+        group.colorName = colorName;
+        group.rgb = rgb;
+        for (const stone of group.stones) {
+          stone.threeMesh.material.color.setRGB(rgb[0]/255, rgb[1]/255, rgb[2]/255);
+        }
+      }
+    });
+
+    renderReport(sortedKeys, groupMap);
+    setStatus(
+      "Calculated " + results.length + " stone(s) into " + sortedKeys.length + " group(s)."
+        + (metalExcluded.length ? " (" + metalExcluded.length + " metal-tagged stone(s) excluded)" : ""),
+      "ok"
+    );
+  });
+
+  function renderReport(sortedKeys, groupMap) {
+    const byCategory = new Map();
+    for (const key of sortedKeys) {
+      const g = groupMap.get(key);
+      if (!byCategory.has(g.category)) byCategory.set(g.category, []);
+      byCategory.get(g.category).push(g);
+    }
+    const categories = Array.from(byCategory.keys()).sort();
+
+    let html = "";
+    let grandQty = 0, grandCT = 0;
+
+    for (const cat of categories) {
+      const groups = byCategory.get(cat);
+      let catQty = 0, catCT = 0;
+      html += '<div class="category-block"><div class="category-title">' + escapeHtml(cat) + '</div>';
+      html += '<table class="report-table"><tr><th>L</th><th>W</th><th>CT</th><th>Qty</th><th>Color</th></tr>';
+      for (const g of groups) {
+        const qty = g.stones.length;
+        catQty += qty; catCT += g.ct * qty;
+        html += '<tr>'
+          + '<td>' + g.length.toFixed(1) + '</td>'
+          + '<td>' + g.width.toFixed(1) + '</td>'
+          + '<td>' + g.ct.toFixed(3) + '</td>'
+          + '<td>' + qty + '</td>'
+          + '<td><span class="swatch" style="background:rgb(' + g.rgb.join(',') + ')"></span>' + g.colorName + '</td>'
+          + '</tr>';
+      }
+      html += '<tr class="subtotal-row"><td colspan="3">Subtotal</td><td>' + catQty + '</td><td>' + catCT.toFixed(3) + ' ct</td></tr>';
+      html += '</table></div>';
+      grandQty += catQty; grandCT += catCT;
+    }
+
+    $("report-empty").style.display = "none";
+    $("report-content").style.display = "block";
+    $("report-content").innerHTML = html;
+    $("grand-total").style.display = "flex";
+    $("grand-total").innerHTML = "<span>Grand Total</span><strong>" + grandQty + " pcs, " + grandCT.toFixed(3) + " ct</strong>";
+    $("btn-copy").disabled = false;
+
+    const panelSheet = $("panel");
+    if (panelSheet) panelSheet.classList.add("expanded"); // auto-open the mobile bottom sheet to show the new report
+
+    lastReport = { categories, byCategory, grandQty, grandCT };
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // ============================================================
+  // Copy to clipboard (plain text + rich HTML with matching colors)
+  // ============================================================
+  $("btn-copy").addEventListener("click", async () => {
+    if (!lastReport) return;
+    const { categories, byCategory, grandQty, grandCT } = lastReport;
+
+    let plainLines = ["Category\tLength (mm)\tWidth (mm)\tCT Weight\tQty\tSubtotal CT\tColor"];
+    let htmlRows = ['<tr><th>Category</th><th>Length (mm)</th><th>Width (mm)</th><th>CT Weight</th><th>Qty</th><th>Subtotal CT</th><th>Color</th></tr>'];
+
+    for (const cat of categories) {
+      const groups = byCategory.get(cat);
+      let catQty = 0, catCT = 0;
+      for (const g of groups) {
+        const qty = g.stones.length;
+        const subtotal = g.ct * qty;
+        catQty += qty; catCT += subtotal;
+        plainLines.push([cat, g.length.toFixed(1), g.width.toFixed(1), g.ct.toFixed(3), qty, subtotal.toFixed(3), g.colorName].join("\t"));
+
+        const lum = 0.299*g.rgb[0] + 0.587*g.rgb[1] + 0.114*g.rgb[2];
+        const textColor = lum > 140 ? "#000000" : "#FFFFFF";
+        const bg = "rgb(" + g.rgb.join(",") + ")";
+        htmlRows.push(
+          '<tr style="background:' + bg + ';color:' + textColor + ';">'
+          + '<td>' + escapeHtml(cat) + '</td>'
+          + '<td>' + g.length.toFixed(1) + '</td>'
+          + '<td>' + g.width.toFixed(1) + '</td>'
+          + '<td>' + g.ct.toFixed(3) + '</td>'
+          + '<td>' + qty + '</td>'
+          + '<td>' + subtotal.toFixed(3) + '</td>'
+          + '<td>' + g.colorName + '</td>'
+          + '</tr>'
+        );
+      }
+      plainLines.push(cat + " TOTAL\t\t\t\t" + catQty + "\t" + catCT.toFixed(3));
+      htmlRows.push('<tr style="font-weight:bold;background:#eee;"><td>' + escapeHtml(cat) + ' TOTAL</td><td></td><td></td><td></td><td>' + catQty + '</td><td>' + catCT.toFixed(3) + '</td><td></td></tr>');
+    }
+    plainLines.push("GRAND TOTAL\t\t\t\t" + grandQty + "\t" + grandCT.toFixed(3));
+    htmlRows.push('<tr style="font-weight:bold;background:#ddd;"><td>GRAND TOTAL</td><td></td><td></td><td></td><td>' + grandQty + '</td><td>' + grandCT.toFixed(3) + '</td><td></td></tr>');
+
+    const plainText = plainLines.join("\n");
+    const htmlTable = '<table style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:11pt;" border="1">' + htmlRows.join("") + '</table>';
+
+    try {
+      const item = new ClipboardItem({
+        "text/plain": new Blob([plainText], { type: "text/plain" }),
+        "text/html": new Blob([htmlTable], { type: "text/html" }),
+      });
+      await navigator.clipboard.write([item]);
+      setStatus("Copied! Paste into Excel to see matching cell colors.", "ok");
+    } catch (e) {
+      console.warn("Rich clipboard write failed, falling back to plain text.", e);
+      try {
+        await navigator.clipboard.writeText(plainText);
+        setStatus("Copied as plain text (rich copy not supported in this browser).", "ok");
+      } catch (e2) {
+        setStatus("Copy failed: " + e2.message, "err");
+      }
+    }
+  });
+
+  // ============================================================
+  // File input wiring
+  // ============================================================
+  $("file-input").addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    $("file-status").textContent = file.name;
+    try {
+      await loadFile(file);
+    } catch (e) {
+      console.error(e);
+      setStatus("Error loading file: " + e.message, "err");
+    }
+  });
+
+  // ============================================================
+  // Mobile bottom-sheet panel: tap the handle to expand/collapse
+  // ============================================================
+  const panelEl = $("panel");
+  const panelHandleEl = $("panel-handle");
+  if (panelHandleEl) {
+    panelHandleEl.addEventListener("click", () => {
+      panelEl.classList.toggle("expanded");
+    });
+  }
+
+  setStatus("Ready. Waiting for a .3dm file.");
+})();
+</script>
+</body>
+</html>
